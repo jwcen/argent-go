@@ -1,0 +1,9 @@
+# 规划文档 / 参考资料（cleanroom 参考，不进版本库）
+refactor/
+.workbuddy/
+
+# Go 构建产物
+*.exe
+*.test
+*.out
+/bin/
