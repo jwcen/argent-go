@@ -7,3 +7,6 @@ refactor/
 *.test
 *.out
 /bin/
+
+# 本地日志文件（运行时生成，不进版本库）
+/logs/
