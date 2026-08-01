@@ -13,6 +13,7 @@ import (
 	"github.com/jwcen/argent-go/internal/infra/sqlite"
 	"github.com/jwcen/argent-go/internal/store"
 	"github.com/jwcen/argent-go/internal/transport"
+	"github.com/jwcen/argent-go/web"
 )
 
 // App 是组装完成的应用，持有 HTTP 引擎与需要优雅关闭的资源。
@@ -54,12 +55,42 @@ func Build(ctx context.Context) (*App, error) {
 		auth.DefaultConfig(),
 	)
 
+	static, err := buildStatic(logger)
+	if err != nil {
+		_ = mgr.Close()
+		return nil, fmt.Errorf("bootstrap: static assets: %w", err)
+	}
+
 	engine := transport.New(transport.Deps{
 		Logger: logger,
 		Auth:   authSvc,
+		Static: static,
 	})
 
 	return &App{Engine: engine, Store: mgr}, nil
+}
+
+// buildStatic 决定前端资源从哪来。
+//
+// 默认走 go:embed（二进制自带一份，部署时 scp 单文件即可，
+// 不存在「忘了拷 static 目录」这类事故）。
+// 设置 ARGENT_STATIC_DIR 则改读磁盘，改完文件刷新浏览器就能看到效果，
+// 适合调试前端。套路和 ARGENT_LEGACY_DB 一致：默认值走标准路径，环境变量开后门。
+//
+// 两种来源都是 fs.FS，StaticHandler 感知不到区别。
+func buildStatic(logger *slog.Logger) (*transport.StaticHandler, error) {
+	if dir := os.Getenv("ARGENT_STATIC_DIR"); dir != "" {
+		logger.Info("serving frontend from disk", "dir", dir)
+		// precompute=false：磁盘文件随时会变，ETag 每次实时算。
+		return transport.NewStaticHandler(web.DirFS(dir), false, logger)
+	}
+
+	fsys, err := web.EmbeddedFS()
+	if err != nil {
+		return nil, err
+	}
+	// precompute=true：编译期固定的内容，启动时算一次 ETag 即可。
+	return transport.NewStaticHandler(fsys, true, logger)
 }
 
 // buildLogger 从环境变量构造结构化 logger，并设为 slog 默认，

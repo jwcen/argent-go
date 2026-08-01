@@ -2,6 +2,7 @@ package transport
 
 import (
 	"log/slog"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 
@@ -25,6 +26,9 @@ import (
 type Deps struct {
 	Logger *slog.Logger
 	Auth   *auth.Service
+
+	// Static 是前端静态资源服务，nil 表示纯 API 模式（不托管前端）。
+	Static *StaticHandler
 }
 
 func New(d Deps) *gin.Engine {
@@ -35,6 +39,13 @@ func New(d Deps) *gin.Engine {
 
 	r := gin.New()
 	r.SetTrustedProxies(nil)
+
+	// gin 默认对「路径存在但方法不对」也返回 404，开启后才会返回 405。
+	// 配合下面的 NoMethod，保证错误体格式始终是 {"detail": ...}。
+	r.HandleMethodNotAllowed = true
+	r.NoMethod(func(c *gin.Context) {
+		WriteError(c, http.StatusMethodNotAllowed, "method not allowed")
+	})
 
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Recovery(logger))
@@ -50,7 +61,18 @@ func New(d Deps) *gin.Engine {
 		// 一次性获得「必须登录 + 用户已注入 context」的保证。
 		protected := r.Group("/api")
 		protected.Use(middleware.RequireAuth(d.Auth))
-		_ = protected // Stage 3+ 开始往里挂 portfolio / market / assets 等
+		_ = protected // Stage 4+ 开始往里挂 portfolio / market / assets 等
+	}
+
+	// 静态服务必须最后注册：它走 NoRoute 兜底，
+	// 语义上就是「以上路由都没匹配到，才去静态资源里找」。
+	if d.Static != nil {
+		d.Static.Register(r)
+	} else {
+		// 纯 API 模式下也要保证 404 是 JSON，而不是 gin 默认的空 body。
+		r.NoRoute(func(c *gin.Context) {
+			WriteError(c, http.StatusNotFound, "not found")
+		})
 	}
 
 	return r
