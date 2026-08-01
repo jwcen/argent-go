@@ -22,10 +22,10 @@ func (m Money) YuanF() float64 {
 	return float64(m) / 100
 }
 
-func (m Money) Add(o Money) Money  { return m + o }
-func (m Money) Sub(o Money) Money  { return m - o }
+func (m Money) Add(o Money) Money    { return m + o }
+func (m Money) Sub(o Money) Money    { return m - o }
 func (m Money) MulInt(n int64) Money { return m * Money(n) }
-func (m Money) IsZero() bool       { return m == 0 }
+func (m Money) IsZero() bool         { return m == 0 }
 
 // String 给人看的“¥12.34”格式。
 func (m Money) String() string {

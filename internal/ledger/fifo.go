@@ -41,13 +41,13 @@ type Lot struct {
 
 // PositionState 一段（或当前）持仓的聚合结果。
 type PositionState struct {
-	Shares        int64          // 当前总股数
-	CostPrice     domain.Money   // 综合成本法单价（分）：(本轮买入额 - 本轮卖出额) / 当前股数
-	FIFOCostPrice domain.Money   // FIFO 成本法单价（分）：剩余批次按原始买入价加权
-	WeightedDays  int            // 按股数加权的平均持有天数
-	RealizedPnL   domain.Money   // 累计已实现盈亏（含所有卖出，跨段累加）
-	RealizedCarry domain.Money   // 已清仓段的已实现盈亏（未摊进当前浮动成本）
-	Lots          []Lot          // 剩余批次
+	Shares        int64        // 当前总股数
+	CostPrice     domain.Money // 综合成本法单价（分）：(本轮买入额 - 本轮卖出额) / 当前股数
+	FIFOCostPrice domain.Money // FIFO 成本法单价（分）：剩余批次按原始买入价加权
+	WeightedDays  int          // 按股数加权的平均持有天数
+	RealizedPnL   domain.Money // 累计已实现盈亏（含所有卖出，跨段累加）
+	RealizedCarry domain.Money // 已清仓段的已实现盈亏（未摊进当前浮动成本）
+	Lots          []Lot        // 剩余批次
 }
 
 // ComputePositionState 由一串（可能乱序的）持仓动作，算出当前聚合状态。
