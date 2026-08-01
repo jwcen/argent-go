@@ -1,6 +1,8 @@
 # 规划文档 / 参考资料（cleanroom 参考，不进版本库）
 refactor/
 .workbuddy/
+# 个人学习笔记（边做边学 Go 的沉淀，私有、不进版本库）
+learns/
 
 # Go 构建产物
 *.exe
