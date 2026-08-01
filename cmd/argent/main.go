@@ -1,12 +1,12 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 	"os"
 )
 
 func main() {
-	// 12-factor：端口可由环境变量覆盖。
+	// 12-factor：端口可由环境变量覆盖（Python 原版用 8888，Go 新版用 8889 并行对拍）。
 	port := os.Getenv("ARGENT_PORT")
 	if port == "" {
 		port = "8889"
@@ -15,8 +15,9 @@ func main() {
 	r := Build()
 
 	addr := ":" + port
-	log.Printf("argent-go listening on %s", addr)
+	slog.Default().Info("argent-go starting", slog.String("addr", addr))
 	if err := r.Run(addr); err != nil {
-		log.Fatalf("server exited: %v", err)
+		slog.Default().Error("server exited", slog.Any("err", err))
+		os.Exit(1)
 	}
 }
