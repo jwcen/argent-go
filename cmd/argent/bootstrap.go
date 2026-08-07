@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/jwcen/argent-go/internal/agent"
 	"github.com/jwcen/argent-go/internal/auth"
 	"github.com/jwcen/argent-go/internal/infra/log"
 	"github.com/jwcen/argent-go/internal/infra/sqlite"
@@ -86,11 +87,15 @@ func Build(ctx context.Context) (*App, error) {
 	})
 	sched.Start(ctx)
 
+	// LLM agent
+	agentSvc := agent.NewService(agent.LoadConfig(), cascade, cascade, logger)
+
 	engine := transport.New(transport.Deps{
 		Logger: logger,
 		Auth:   authSvc,
 		UserDB: userDB,
 		Market: market.NewMarketHandler(cascade, cascade, em),
+		Agent:  transport.NewAgentHandler(agentSvc),
 		WSHub:  wsHub,
 		Static: static,
 	})

@@ -25,6 +25,9 @@ type Deps struct {
 	// Market 行情数据源 handler（/api/market/*）。nil 不挂载。
 	Market *market.MarketHandler
 
+	// Agent LLM 问股 handler（/api/ask/*）。nil 不挂载。
+	Agent *AgentHandler
+
 	// WSHub WebSocket 推送 hub，nil 不挂载 /ws。
 	WSHub *ws.Hub
 
@@ -64,6 +67,9 @@ func New(d Deps) *gin.Engine {
 		}
 		if d.Market != nil {
 			d.Market.Register(protected)
+		}
+		if d.Agent != nil {
+			d.Agent.Register(protected)
 		}
 		if d.WSHub != nil {
 			protected.GET("/ws", d.WSHub.HandleWS)
