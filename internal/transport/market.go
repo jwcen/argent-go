@@ -1,22 +1,22 @@
-package market
+package transport
 
 import (
-	"context"
-	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/jwcen/argent-go/internal/market"
 )
 
 // MarketHandler 把行情数据源适配成 HTTP 接口。
 type MarketHandler struct {
-	quoter  Quoter
-	kliner  KlineProvider
-	indices IndexProvider
+	quoter  market.Quoter
+	kliner  market.KlineProvider
+	indices market.IndexProvider
 }
 
-func NewMarketHandler(q Quoter, k KlineProvider, idx IndexProvider) *MarketHandler {
+func NewMarketHandler(q market.Quoter, k market.KlineProvider, idx market.IndexProvider) *MarketHandler {
 	return &MarketHandler{quoter: q, kliner: k, indices: idx}
 }
 
@@ -59,7 +59,7 @@ func (h *MarketHandler) BatchQuote(c *gin.Context) {
 		return
 	}
 	// 返回数组
-	list := make([]*Quote, 0, len(quotes))
+	list := make([]*market.Quote, 0, len(quotes))
 	for _, q := range quotes {
 		list = append(list, q)
 	}
@@ -100,8 +100,8 @@ func (h *MarketHandler) Indices(c *gin.Context) {
 // GET /api/market/trading-day — 今日是否交易日 + 下个交易日
 func (h *MarketHandler) TradingDay(c *gin.Context) {
 	now := time.Now()
-	today := IsTradingDay(now)
-	next := NextTradingDay(now)
+	today := market.IsTradingDay(now)
+	next := market.NextTradingDay(now)
 	c.JSON(200, gin.H{
 		"is_trading_day":   today,
 		"today":            now.Format("2006-01-02"),
@@ -175,5 +175,3 @@ func trimSpace(s string) string {
 }
 
 // 确保 http 包被引用（handler 里可能用到）
-var _ = http.MethodGet
-var _ = context.Background

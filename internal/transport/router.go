@@ -8,7 +8,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/jwcen/argent-go/internal/auth"
-	"github.com/jwcen/argent-go/internal/market"
 	"github.com/jwcen/argent-go/internal/transport/middleware"
 	"github.com/jwcen/argent-go/internal/transport/ws"
 )
@@ -23,7 +22,7 @@ type Deps struct {
 	UserDB func(userID int64) (*sql.DB, error)
 
 	// Market 行情数据源 handler（/api/market/*）。nil 不挂载。
-	Market *market.MarketHandler
+	Market *MarketHandler
 
 	// Agent LLM 问股 handler（/api/ask/*）。nil 不挂载。
 	Agent *AgentHandler
@@ -64,6 +63,7 @@ func New(d Deps) *gin.Engine {
 		if d.UserDB != nil {
 			NewPortfolioHandler(d.UserDB).Register(protected)
 			NewExternalHandler(d.UserDB).Register(protected)
+			NewDataHandler(d.UserDB).Register(protected)
 		}
 		if d.Market != nil {
 			d.Market.Register(protected)

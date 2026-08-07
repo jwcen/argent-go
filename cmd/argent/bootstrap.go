@@ -94,7 +94,7 @@ func Build(ctx context.Context) (*App, error) {
 		Logger: logger,
 		Auth:   authSvc,
 		UserDB: userDB,
-		Market: market.NewMarketHandler(cascade, cascade, em),
+		Market: transport.NewMarketHandler(cascade, cascade, em),
 		Agent:  transport.NewAgentHandler(agentSvc),
 		WSHub:  wsHub,
 		Static: static,
