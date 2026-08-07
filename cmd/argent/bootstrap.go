@@ -12,6 +12,7 @@ import (
 	"github.com/jwcen/argent-go/internal/auth"
 	"github.com/jwcen/argent-go/internal/infra/log"
 	"github.com/jwcen/argent-go/internal/infra/sqlite"
+	"github.com/jwcen/argent-go/internal/market"
 	"github.com/jwcen/argent-go/internal/store"
 	"github.com/jwcen/argent-go/internal/transport"
 	"github.com/jwcen/argent-go/web"
@@ -60,10 +61,16 @@ func Build(ctx context.Context) (*App, error) {
 		return mgr.User(ctx, userID)
 	}
 
+	// 行情数据源：东财（主）→ 新浪（降级），cascade 装饰器自动切换。
+	em := market.NewEastmoneySource()
+	sina := market.NewSinaSource()
+	cascade := market.NewCascade(em, sina, logger)
+
 	engine := transport.New(transport.Deps{
 		Logger: logger,
 		Auth:   authSvc,
 		UserDB: userDB,
+		Market: market.NewMarketHandler(cascade, cascade, em),
 		Static: static,
 	})
 

@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/jwcen/argent-go/internal/auth"
+	"github.com/jwcen/argent-go/internal/market"
 	"github.com/jwcen/argent-go/internal/transport/middleware"
 )
 
@@ -18,11 +19,11 @@ type Deps struct {
 	Logger *slog.Logger
 	Auth   *auth.Service
 
-	// UserDB 按 userID 返回该用户的独立库句柄（portfolio 等业务域用）。
-	// nil 表示不挂载业务域路由。
 	UserDB func(userID int64) (*sql.DB, error)
 
-	// Static 是前端静态资源服务，nil 表示纯 API 模式。
+	// Market 行情数据源 handler（/api/market/*）。nil 不挂载。
+	Market *market.MarketHandler
+
 	Static *StaticHandler
 }
 
@@ -55,6 +56,9 @@ func New(d Deps) *gin.Engine {
 
 		if d.UserDB != nil {
 			NewPortfolioHandler(d.UserDB).Register(protected)
+		}
+		if d.Market != nil {
+			d.Market.Register(protected)
 		}
 	}
 
