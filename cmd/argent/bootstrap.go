@@ -6,24 +6,35 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/jwcen/argent-go/internal/auth"
 	"github.com/jwcen/argent-go/internal/infra/log"
 	"github.com/jwcen/argent-go/internal/infra/sqlite"
+	"github.com/jwcen/argent-go/internal/job"
 	"github.com/jwcen/argent-go/internal/market"
 	"github.com/jwcen/argent-go/internal/store"
 	"github.com/jwcen/argent-go/internal/transport"
+	"github.com/jwcen/argent-go/internal/transport/ws"
 	"github.com/jwcen/argent-go/web"
 )
 
 type App struct {
-	Engine *gin.Engine
-	Store  *store.Manager
+	Engine    *gin.Engine
+	Store     *store.Manager
+	Scheduler *job.Scheduler
+	WSHub     *ws.Hub
 }
 
 func (a *App) Close() error {
+	if a.Scheduler != nil {
+		a.Scheduler.Stop()
+	}
+	if a.WSHub != nil {
+		a.WSHub.Stop()
+	}
 	if a.Store != nil {
 		return a.Store.Close()
 	}
@@ -55,26 +66,36 @@ func Build(ctx context.Context) (*App, error) {
 		return nil, fmt.Errorf("bootstrap: static assets: %w", err)
 	}
 
-	// userDB 把 store.Manager.User 包成 transport 层需要的签名。
-	// portfolio 等业务域的 handler 用它在请求时按 userID 取用户库句柄。
 	userDB := func(userID int64) (*sql.DB, error) {
 		return mgr.User(ctx, userID)
 	}
 
-	// 行情数据源：东财（主）→ 新浪（降级），cascade 装饰器自动切换。
+	// 行情数据源
 	em := market.NewEastmoneySource()
 	sina := market.NewSinaSource()
 	cascade := market.NewCascade(em, sina, logger)
+
+	// WebSocket hub
+	wsHub := ws.NewHub(cascade, logger)
+	wsHub.Start(ctx)
+
+	// Job 调度器
+	sched := job.NewScheduler(logger)
+	sched.AddTradingDay("purge-expired-sessions", 6*time.Hour, func(ctx context.Context) {
+		authSvc.PurgeExpiredSessions(ctx)
+	})
+	sched.Start(ctx)
 
 	engine := transport.New(transport.Deps{
 		Logger: logger,
 		Auth:   authSvc,
 		UserDB: userDB,
 		Market: market.NewMarketHandler(cascade, cascade, em),
+		WSHub:  wsHub,
 		Static: static,
 	})
 
-	return &App{Engine: engine, Store: mgr}, nil
+	return &App{Engine: engine, Store: mgr, Scheduler: sched, WSHub: wsHub}, nil
 }
 
 func buildStatic(logger *slog.Logger) (*transport.StaticHandler, error) {

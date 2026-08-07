@@ -10,6 +10,7 @@ import (
 	"github.com/jwcen/argent-go/internal/auth"
 	"github.com/jwcen/argent-go/internal/market"
 	"github.com/jwcen/argent-go/internal/transport/middleware"
+	"github.com/jwcen/argent-go/internal/transport/ws"
 )
 
 // New 构建 gin 引擎并挂载所有 transport 层中间件与路由。
@@ -23,6 +24,9 @@ type Deps struct {
 
 	// Market 行情数据源 handler（/api/market/*）。nil 不挂载。
 	Market *market.MarketHandler
+
+	// WSHub WebSocket 推送 hub，nil 不挂载 /ws。
+	WSHub *ws.Hub
 
 	Static *StaticHandler
 }
@@ -59,6 +63,9 @@ func New(d Deps) *gin.Engine {
 		}
 		if d.Market != nil {
 			d.Market.Register(protected)
+		}
+		if d.WSHub != nil {
+			protected.GET("/ws", d.WSHub.HandleWS)
 		}
 	}
 
