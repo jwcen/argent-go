@@ -60,6 +60,7 @@ func New(d Deps) *gin.Engine {
 
 		if d.UserDB != nil {
 			NewPortfolioHandler(d.UserDB).Register(protected)
+			NewExternalHandler(d.UserDB).Register(protected)
 		}
 		if d.Market != nil {
 			d.Market.Register(protected)
