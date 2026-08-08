@@ -31,9 +31,130 @@ func (s *Service) SetClock(f func() time.Time) { s.now = f }
 
 // ---- Holdings ----
 
-// ListHoldings 返回全部持仓聚合行。
+// ListHoldings 返回全部持仓聚合行，并补齐分红衍生字段。
+//
+// 为什么衍生字段在读取时算、而不是落库：
+//   - 摊薄依赖「今天」（ex_date <= today）和除权事件表，两者都会变，落库就会过期；
+//   - holdings 表要与原版 Python schema 保持字节级兼容，不能加列。
+//
+// 成本是 3 次查询（holdings + 全部流水 + 全部除权事件），不随持仓数量放大。
 func (s *Service) ListHoldings(ctx context.Context) ([]Holding, error) {
-	return s.repo.ListHoldings(ctx)
+	holdings, err := s.repo.ListHoldings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(holdings) == 0 {
+		return holdings, nil
+	}
+
+	actions, err := s.repo.ListAllActions(ctx)
+	if err != nil {
+		return holdings, nil // 降级：拿不到流水就返回裸持仓，不要让整个页面挂掉
+	}
+	events, err := s.repo.ListAllDividendEvents(ctx)
+	if err != nil {
+		events = nil
+	}
+
+	actsByCode := make(map[string][]Action, len(holdings))
+	for _, a := range actions {
+		actsByCode[a.StockCode] = append(actsByCode[a.StockCode], a)
+	}
+	evByCode := make(map[string][]DividendEvent)
+	for _, e := range events {
+		evByCode[e.StockCode] = append(evByCode[e.StockCode], e)
+	}
+
+	today := s.now()
+	for i := range holdings {
+		code := holdings[i].StockCode
+		acts := actsByCode[code]
+		if len(acts) == 0 {
+			continue
+		}
+		state := ledger.ComputePositionState(toLedgerActions(acts), today)
+		applyDilution(&state, acts, evByCode[code], today)
+
+		holdings[i].CostPrice = state.CostPrice.YuanF()
+		holdings[i].CostPriceRaw = state.CostPriceRaw.YuanF()
+		holdings[i].FIFOCostPrice = state.FIFOCostPrice.YuanF()
+		holdings[i].DividendPerShare = state.DividendPerShare.YuanF()
+		holdings[i].IncomeRealized = state.IncomeRealized.YuanF()
+		holdings[i].RealizedCarry = state.RealizedCarry.YuanF()
+		holdings[i].WeightedDays = state.WeightedDays
+	}
+	return holdings, nil
+}
+
+// applyDilution 决定「这只股票要不要用除权事件摊薄成本」，并执行摊薄。
+//
+// ★ 防双计规则（整个分红模块最关键的一条）★
+//
+// 现金分红这笔钱只能被算一次。它有两种记法，二选一：
+//
+//	记法 A —— 手工记一笔 DIVIDEND 流水。
+//	          钱进 income_realized，算作「已落袋的收益」，成本价不变。
+//	记法 B —— 依赖 dividend_events 里的客观除权事件。
+//	          成本价被摊低，浮动盈亏因此变大，不进已实现。
+//
+// 两种记法对「总收益」的贡献是等价的，但如果同时生效，
+// 同一笔分红会既抬高浮动盈亏、又抬高已实现盈亏，总收益凭空翻倍。
+//
+// 所以规则是：**只要这只股票存在任何手工 DIVIDEND 流水，就认为用户选了记法 A，
+// 完全跳过事件摊薄。** 不做 ex_date 逐笔配对——分红流水的 trade_date 通常是
+// 到账日而非除权日，日期对不上，按日期配对必然漏配或错配，反而制造隐蔽的错账。
+// 宁可用一条粗但可预测的规则，也不要一条精细但会静默出错的规则。
+func applyDilution(state *ledger.PositionState, acts []Action, events []DividendEvent, today time.Time) {
+	for _, a := range acts {
+		if a.ActionType == ActionDividend {
+			return // 用户走的是记法 A，不再摊薄
+		}
+	}
+	if len(events) == 0 {
+		return
+	}
+	div := ledger.CumulativeCashDivPerShare(toLedgerEvents(events), state.OpenedAt, today)
+	if div > 0 {
+		ledger.DiluteState(state, div)
+	}
+}
+
+// ---- Dividend events ----
+
+// ListDividendEvents 返回某只股票的全部除权事件。
+func (s *Service) ListDividendEvents(ctx context.Context, code string) ([]DividendEvent, error) {
+	if code == "" {
+		return nil, ErrInvalidCode
+	}
+	return s.repo.ListDividendEvents(ctx, code)
+}
+
+// UpsertDividendEvent 新增或覆盖一次除权事件（按 code + ex_date 幂等）。
+func (s *Service) UpsertDividendEvent(ctx context.Context, e *DividendEvent) (int64, error) {
+	if e.StockCode == "" {
+		return 0, ErrInvalidCode
+	}
+	if _, err := time.Parse(dateLayout, e.ExDate); err != nil {
+		return 0, ErrInvalidAction
+	}
+	if e.CashPerShare < 0 || e.BonusRatio < 0 {
+		return 0, ErrInvalidPrice
+	}
+	if e.CashPerShare == 0 && e.BonusRatio == 0 {
+		return 0, ErrInvalidAction // 空事件没有意义
+	}
+	if e.Source == "" {
+		e.Source = "manual"
+	}
+	return s.repo.UpsertDividendEvent(ctx, e)
+}
+
+// DeleteDividendEvent 删除一次除权事件。
+func (s *Service) DeleteDividendEvent(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return ErrNotFound
+	}
+	return s.repo.DeleteDividendEvent(ctx, id)
 }
 
 // ---- Actions ----
@@ -256,11 +377,14 @@ func (s *Service) recomputeHolding(ctx context.Context, code string) error {
 		purchaseDate = actions[0].TradeDate
 	}
 
+	// 落库存的是**未摊薄**的原始成本。摊薄依赖「今天」和除权事件表，两者都会随时间变，
+	// 存成快照就会过期；统一在 ListHoldings 读取时实时摊薄（与原版 Python 的
+	// compute_position_state → dilute_state 调用链同口径）。
 	h := &Holding{
 		StockCode:    code,
 		StockName:    name,
 		Shares:       state.Shares,
-		CostPrice:    state.CostPrice.YuanF(),
+		CostPrice:    state.CostPriceRaw.YuanF(),
 		PurchaseDate: purchaseDate,
 	}
 	return s.repo.UpsertHolding(ctx, h)
@@ -285,11 +409,32 @@ func (s *Service) fillFee(ctx context.Context, a *Action) {
 	a.Fee = &fee
 }
 
+// dateLayout 是流水/事件里日期列的统一格式。
+const dateLayout = "2006-01-02"
+
+// toLedgerEvents 把 portfolio.DividendEvent 转成 ledger.DividendEvent。
+// 日期解析失败的事件直接丢弃——脏数据参与摊薄比不摊薄危险得多。
+func toLedgerEvents(events []DividendEvent) []ledger.DividendEvent {
+	out := make([]ledger.DividendEvent, 0, len(events))
+	for _, e := range events {
+		d, err := time.Parse(dateLayout, e.ExDate)
+		if err != nil {
+			continue
+		}
+		out = append(out, ledger.DividendEvent{
+			ExDate:       d,
+			CashPerShare: domain.Yuan(e.CashPerShare),
+			BonusRatio:   e.BonusRatio,
+		})
+	}
+	return out
+}
+
 // toLedgerActions 把 portfolio.Action 转成 ledger.Action。
 func toLedgerActions(actions []Action) []ledger.Action {
 	out := make([]ledger.Action, 0, len(actions))
 	for _, a := range actions {
-		t, err := time.Parse("2006-01-02", a.TradeDate)
+		t, err := time.Parse(dateLayout, a.TradeDate)
 		if err != nil {
 			t = time.Now()
 		}
@@ -308,12 +453,17 @@ func validateAction(a *Action) error {
 		return ErrInvalidCode
 	}
 	switch a.ActionType {
-	case ActionBuy, ActionSell, ActionAdd:
+	case ActionBuy, ActionSell, ActionAdd, ActionBonus, ActionDividend:
 	default:
 		return ErrInvalidAction
 	}
 	if a.Price < 0 {
 		return ErrInvalidPrice
+	}
+	// 送股的 price 必须是 0：非零会被 FIFO 当成有成本的批次，
+	// 摊薄效果直接失效（这是最容易记错的一个口径）。
+	if a.ActionType == ActionBonus {
+		a.Price = 0
 	}
 	if a.Shares <= 0 {
 		return ErrInvalidShares

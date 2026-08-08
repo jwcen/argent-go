@@ -40,6 +40,9 @@ func (h *PortfolioHandler) Register(r gin.IRouter) {
 	g.POST("/:code/actions", h.CreateAction)
 	g.PUT("/actions/:id", h.UpdateAction)
 	g.DELETE("/actions/:id", h.DeleteAction)
+	g.GET("/:code/dividends", h.ListDividendEvents)
+	g.POST("/:code/dividends", h.UpsertDividendEvent)
+	g.DELETE("/dividends/:id", h.DeleteDividendEvent)
 
 	wl := r.Group("/watchlist")
 	wl.GET("", h.ListWatchlist)
@@ -468,4 +471,73 @@ func writePortfolioError(c *gin.Context, err error) {
 	default:
 		WriteError(c, http.StatusInternalServerError, err.Error())
 	}
+}
+
+// ---- Dividend events ----
+
+func (h *PortfolioHandler) ListDividendEvents(c *gin.Context) {
+	svc, err := h.svc(c)
+	if err != nil {
+		WriteError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	events, err := svc.ListDividendEvents(c.Request.Context(), c.Param("code"))
+	if err != nil {
+		WriteError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	WriteJSON(c, http.StatusOK, events)
+}
+
+type upsertDividendReq struct {
+	ExDate       string  `json:"ex_date" binding:"required"`
+	CashPerShare float64 `json:"cash_per_share"`
+	BonusRatio   float64 `json:"bonus_ratio"`
+	Source       string  `json:"source"`
+	Note         string  `json:"note"`
+}
+
+func (h *PortfolioHandler) UpsertDividendEvent(c *gin.Context) {
+	svc, err := h.svc(c)
+	if err != nil {
+		WriteError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var req upsertDividendReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		WriteError(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	e := &portfolio.DividendEvent{
+		StockCode:    c.Param("code"),
+		ExDate:       req.ExDate,
+		CashPerShare: req.CashPerShare,
+		BonusRatio:   req.BonusRatio,
+		Source:       req.Source,
+		Note:         req.Note,
+	}
+	id, err := svc.UpsertDividendEvent(c.Request.Context(), e)
+	if err != nil {
+		WriteError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	WriteJSON(c, http.StatusOK, gin.H{"id": id})
+}
+
+func (h *PortfolioHandler) DeleteDividendEvent(c *gin.Context) {
+	svc, err := h.svc(c)
+	if err != nil {
+		WriteError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		WriteError(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := svc.DeleteDividendEvent(c.Request.Context(), id); err != nil {
+		WriteError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	WriteJSON(c, http.StatusOK, gin.H{"ok": true})
 }

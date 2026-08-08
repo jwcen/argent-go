@@ -22,7 +22,23 @@ const (
 	ActionBuy  ActionType = "BUY"
 	ActionSell ActionType = "SELL"
 	ActionAdd  ActionType = "ADD"
+
+	// ActionBonus 送股/转增：股数增加、成本为 0，走“被动摊薄”——
+	// 入一个 Price=0 的批次，FIFO 分母变大而分子不变，成本自然被稀释。
+	ActionBonus ActionType = "BONUS"
+
+	// ActionDividend 现金分红：不增减股数、不消耗批次，只累加“分红收入”。
+	// Price 语义为“每股派息”，Shares 为“参与分红的股数”，金额 = Price × Shares。
+	ActionDividend ActionType = "DIVIDEND"
 )
+
+// IsAcquire 报告该动作是否会新增持仓批次（BUY / ADD / BONUS）。
+func (t ActionType) IsAcquire() bool {
+	return t == ActionBuy || t == ActionAdd || t == ActionBonus
+}
+
+// IsIncome 报告该动作是否为“只产生现金收入、不动股数”的类型（DIVIDEND）。
+func (t ActionType) IsIncome() bool { return t == ActionDividend }
 
 // Action 一笔持仓流水。
 type Action struct {
@@ -42,12 +58,26 @@ type Lot struct {
 // PositionState 一段（或当前）持仓的聚合结果。
 type PositionState struct {
 	Shares        int64        // 当前总股数
-	CostPrice     domain.Money // 综合成本法单价（分）：(本轮买入额 - 本轮卖出额) / 当前股数
-	FIFOCostPrice domain.Money // FIFO 成本法单价（分）：剩余批次按原始买入价加权
+	CostPrice     domain.Money // 综合成本法单价（分），已摊薄（未调用 DiluteState 时等于 Raw）
+	FIFOCostPrice domain.Money // FIFO 成本法单价（分），已摊薄
 	WeightedDays  int          // 按股数加权的平均持有天数
-	RealizedPnL   domain.Money // 累计已实现盈亏（含所有卖出，跨段累加）
-	RealizedCarry domain.Money // 已清仓段的已实现盈亏（未摊进当前浮动成本）
+	RealizedPnL   domain.Money // 累计已实现盈亏 = 卖出实现 + 分红收入
+	RealizedCarry domain.Money // 已清仓段的已实现 + 分红收入（未摊进当前浮动成本的部分）
 	Lots          []Lot        // 剩余批次
+
+	// ---- 分红相关（Stage 11 新增）----
+
+	// IncomeRealized 现金分红累计收入（分）。不消耗批次，独立于卖出实现。
+	IncomeRealized domain.Money
+	// CostPriceRaw / FIFOCostPriceRaw 摊薄前的原始成本单价，供前端 tooltip 对照，
+	// 同时是 DiluteState 的幂等基准（重复摊薄不会重复扣减）。
+	CostPriceRaw     domain.Money
+	FIFOCostPriceRaw domain.Money
+	// DividendPerShare 已摊薄掉的每股派息（分）。未摊薄时为 0。
+	DividendPerShare domain.Money
+	// OpenedAt 当前持仓段的开仓日（剩余批次里最早的一笔）。
+	// 判断“这次分红我吃不吃得到”要用它：since < ex_date <= today。
+	OpenedAt time.Time
 }
 
 // ComputePositionState 由一串（可能乱序的）持仓动作，算出当前聚合状态。
@@ -74,11 +104,23 @@ func ComputePositionState(actions []Action, today time.Time) PositionState {
 		episodeRealized  domain.Money // 当前段累计已实现
 		realizedPnL      domain.Money // 全局累计已实现
 		realizedCarry    domain.Money // 已清仓段累计已实现
+		incomeRealized   domain.Money // 现金分红累计收入
 	)
 
 	for _, a := range sorted {
+		// 现金分红：不动股数、不消耗批次，只累加收入，所以先于批次逻辑处理掉。
+		// Price=每股派息，Shares=参与分红股数；负数派息无意义，直接忽略。
+		if a.Type.IsIncome() {
+			if amt := a.Price.MulInt(a.Shares); amt > 0 {
+				incomeRealized += amt
+			}
+			continue
+		}
+
 		switch a.Type {
-		case ActionBuy, ActionAdd:
+		case ActionBuy, ActionAdd, ActionBonus:
+			// BONUS 的 Price 恒为 0：批次股数进来了，但 episodeBuyCents 不增加，
+			// 于是「综合成本 = 净投入/股数」和「FIFO 成本」都被动摊薄。
 			lots = append(lots, Lot{Price: a.Price, Shares: a.Shares, TradeDate: a.TradeDate})
 			episodeBuyCents += a.Price.MulInt(a.Shares)
 
@@ -117,7 +159,17 @@ func ComputePositionState(actions []Action, today time.Time) PositionState {
 	total := totalShares(lots)
 	var costPrice, fifoCostPrice domain.Money
 	var weightedDays int
+	var openedAt time.Time
 	if total > 0 {
+		// 开仓日 = 剩余批次里最早的一笔。lots 按入队顺序基本就是时间序，
+		// 但输入可能乱序（且 BONUS 会插在中间），稳妥起见遍历取 min。
+		openedAt = lots[0].TradeDate
+		for _, l := range lots[1:] {
+			if l.TradeDate.Before(openedAt) {
+				openedAt = l.TradeDate
+			}
+		}
+
 		// 综合成本法：本轮净投入 ÷ 当前股数
 		costPrice = (episodeBuyCents - episodeSellCents) / domain.Money(total)
 
@@ -137,14 +189,22 @@ func ComputePositionState(actions []Action, today time.Time) PositionState {
 		weightedDays = int(daySum / total)
 	}
 
+	// 分红收入进两个口径：
+	//   RealizedPnL   = 卖出实现（含当前段） + 分红
+	//   RealizedCarry = 已清仓段实现 + 分红  ← 前端算“总盈亏”时只能加这个，
+	//                   因为当前段的卖出实现已经被综合成本法摊进浮动盈亏里了，再加就是双计。
 	return PositionState{
-		Shares:        total,
-		CostPrice:     costPrice,
-		FIFOCostPrice: fifoCostPrice,
-		WeightedDays:  weightedDays,
-		RealizedPnL:   realizedPnL,
-		RealizedCarry: realizedCarry,
-		Lots:          lots,
+		Shares:           total,
+		CostPrice:        costPrice,
+		FIFOCostPrice:    fifoCostPrice,
+		WeightedDays:     weightedDays,
+		RealizedPnL:      realizedPnL + incomeRealized,
+		RealizedCarry:    realizedCarry + incomeRealized,
+		IncomeRealized:   incomeRealized,
+		CostPriceRaw:     costPrice,
+		FIFOCostPriceRaw: fifoCostPrice,
+		OpenedAt:         openedAt,
+		Lots:             lots,
 	}
 }
 

@@ -15,12 +15,19 @@ import (
 type ActionType string
 
 const (
-	ActionBuy  ActionType = "BUY"
-	ActionSell ActionType = "SELL"
-	ActionAdd  ActionType = "ADD" // 红股/送转
+	ActionBuy      ActionType = "BUY"
+	ActionSell     ActionType = "SELL"
+	ActionAdd      ActionType = "ADD"      // 增股（人工补录）
+	ActionBonus    ActionType = "BONUS"    // 送股/转增，price 恒为 0，被动摊薄成本
+	ActionDividend ActionType = "DIVIDEND" // 现金分红，price=每股派息，不改股数
 )
 
 // Holding 是持仓聚合行。由流水重算得到。
+//
+// 注意 cost_price 是「已摊薄」的成本；cost_price_raw 是摊薄前的原值。
+// 前端 tooltip 用两者之差解释"为什么我的成本比买入价低"。
+// 这三个衍生字段不落库（holdings 表沿用原版 schema 保证兼容），
+// 每次读取时由 service 从流水 + 除权事件实时算出。
 type Holding struct {
 	ID           int64   `json:"id"`
 	StockCode    string  `json:"stock_code"`
@@ -31,6 +38,32 @@ type Holding struct {
 	Broker       string  `json:"broker"`
 	CreatedAt    string  `json:"created_at"`
 	UpdatedAt    string  `json:"updated_at"`
+
+	// ---- 衍生字段（不落库）----
+	CostPriceRaw     float64 `json:"cost_price_raw,omitempty"`     // 摊薄前成本
+	FIFOCostPrice    float64 `json:"fifo_cost_price,omitempty"`    // FIFO 成本法单价
+	DividendPerShare float64 `json:"dividend_per_share,omitempty"` // 已摊薄的每股派息
+	IncomeRealized   float64 `json:"income_realized,omitempty"`    // 累计现金分红收入
+	RealizedCarry    float64 `json:"realized_carry,omitempty"`     // 可直接加进总盈亏的部分
+	WeightedDays     int     `json:"weighted_days,omitempty"`      // 加权持有天数
+}
+
+// DividendEvent 是一次客观的除权除息事件。
+//
+// 与「用户手工记的 DIVIDEND 流水」是两码事：
+//   - 本表 → 摊薄成本（DiluteState）
+//   - 流水 → 计入已实现收益（income_realized）
+//
+// 两条路径互斥，服务层不会让同一笔钱被算两次。
+type DividendEvent struct {
+	ID           int64   `json:"id"`
+	StockCode    string  `json:"stock_code"`
+	ExDate       string  `json:"ex_date"`        // YYYY-MM-DD
+	CashPerShare float64 `json:"cash_per_share"` // 每股派息（元，含税）
+	BonusRatio   float64 `json:"bonus_ratio"`    // 每股送转率
+	Source       string  `json:"source"`         // manual / eastmoney
+	Note         string  `json:"note"`
+	CreatedAt    string  `json:"created_at"`
 }
 
 // Action 是一笔持仓流水——业务数据的真相源。
@@ -113,4 +146,10 @@ type Repository interface {
 	ListWatchlist(ctx context.Context) ([]WatchlistItem, error)
 	AddWatchlist(ctx context.Context, w *WatchlistItem) error
 	RemoveWatchlist(ctx context.Context, code string) error
+
+	ListDividendEvents(ctx context.Context, code string) ([]DividendEvent, error)
+	ListAllDividendEvents(ctx context.Context) ([]DividendEvent, error)
+	// UpsertDividendEvent 按 (stock_code, ex_date) 幂等写入，重复导入不会产生双份摊薄。
+	UpsertDividendEvent(ctx context.Context, e *DividendEvent) (int64, error)
+	DeleteDividendEvent(ctx context.Context, id int64) error
 }

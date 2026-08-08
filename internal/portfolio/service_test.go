@@ -14,6 +14,7 @@ type fakeRepo struct {
 	brokers  []*Broker
 	thesis   map[string]*Thesis
 	watch    map[string]*WatchlistItem
+	divs     []*DividendEvent
 	nextID   int64
 }
 
@@ -360,7 +361,12 @@ func TestValidateAction(t *testing.T) {
 	}{
 		{"valid buy", &Action{StockCode: "600519", ActionType: ActionBuy, Price: 10, Shares: 100}, nil},
 		{"empty code", &Action{StockCode: "", ActionType: ActionBuy, Price: 10, Shares: 100}, ErrInvalidCode},
-		{"bad type", &Action{StockCode: "600519", ActionType: "DIVIDEND", Price: 10, Shares: 100}, ErrInvalidAction},
+		// DIVIDEND / BONUS 自 Stage 11 起是合法类型，这里换一个真正不存在的
+		{"bad type", &Action{StockCode: "600519", ActionType: "SPLIT", Price: 10, Shares: 100}, ErrInvalidAction},
+		{"dividend now valid", &Action{StockCode: "600519", ActionType: ActionDividend, Price: 0.4, Shares: 100}, nil},
+		{"bonus now valid", &Action{StockCode: "600519", ActionType: ActionBonus, Price: 0, Shares: 100}, nil},
+		// 大小写必须严格匹配：action_type 是大写契约，小写会绕过 ledger 的 switch 变成静默空动作
+		{"lowercase rejected", &Action{StockCode: "600519", ActionType: "buy", Price: 10, Shares: 100}, ErrInvalidAction},
 		{"negative price", &Action{StockCode: "600519", ActionType: ActionBuy, Price: -1, Shares: 100}, ErrInvalidPrice},
 		{"zero shares", &Action{StockCode: "600519", ActionType: ActionBuy, Price: 10, Shares: 0}, ErrInvalidShares},
 	}
@@ -382,4 +388,221 @@ func abs(v float64) float64 {
 		return -v
 	}
 	return v
+}
+
+// ---- Dividend events (fakeRepo) ----
+
+func (f *fakeRepo) ListDividendEvents(ctx context.Context, code string) ([]DividendEvent, error) {
+	out := make([]DividendEvent, 0)
+	for _, e := range f.divs {
+		if e.StockCode == code {
+			out = append(out, *e)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeRepo) ListAllDividendEvents(ctx context.Context) ([]DividendEvent, error) {
+	out := make([]DividendEvent, 0, len(f.divs))
+	for _, e := range f.divs {
+		out = append(out, *e)
+	}
+	return out, nil
+}
+
+func (f *fakeRepo) UpsertDividendEvent(ctx context.Context, e *DividendEvent) (int64, error) {
+	for _, ex := range f.divs {
+		if ex.StockCode == e.StockCode && ex.ExDate == e.ExDate {
+			ex.CashPerShare = e.CashPerShare
+			ex.BonusRatio = e.BonusRatio
+			ex.Source = e.Source
+			return ex.ID, nil
+		}
+	}
+	e.ID = f.nextID
+	f.nextID++
+	cp := *e
+	f.divs = append(f.divs, &cp)
+	return e.ID, nil
+}
+
+func (f *fakeRepo) DeleteDividendEvent(ctx context.Context, id int64) error {
+	for i, e := range f.divs {
+		if e.ID == id {
+			f.divs = append(f.divs[:i], f.divs[i+1:]...)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+// ============================================================
+// 分红 / 除权（Stage 11）
+// ============================================================
+
+func fixedClock(y, m, d int) func() time.Time {
+	return func() time.Time { return time.Date(y, time.Month(m), d, 0, 0, 0, 0, time.UTC) }
+}
+
+func TestService_BonusActionDilutesHolding(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewService(repo)
+	svc.SetClock(fixedClock(2026, 1, 10))
+	ctx := context.Background()
+
+	if _, err := svc.CreateAction(ctx, &Action{
+		StockCode: "600519", ActionType: ActionBuy, Price: 10, Shares: 1000, TradeDate: "2025-01-10",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 送股：即便调用方把 price 传成非 0，也必须被强制归零
+	if _, err := svc.CreateAction(ctx, &Action{
+		StockCode: "600519", ActionType: ActionBonus, Price: 9.99, Shares: 300, TradeDate: "2025-06-20",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hs, err := svc.ListHoldings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hs) != 1 {
+		t.Fatalf("holdings = %d, want 1", len(hs))
+	}
+	if hs[0].Shares != 1300 {
+		t.Fatalf("shares = %d, want 1300", hs[0].Shares)
+	}
+	if got := hs[0].CostPrice; got < 7.68 || got > 7.70 {
+		t.Fatalf("cost_price = %.4f, want ≈7.69（送股必须摊薄）", got)
+	}
+}
+
+func TestService_DividendActionIsFreeAndCountsAsIncome(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewService(repo)
+	svc.SetClock(fixedClock(2026, 1, 10))
+	ctx := context.Background()
+
+	if _, err := svc.CreateAction(ctx, &Action{
+		StockCode: "600519", ActionType: ActionBuy, Price: 10, Shares: 1000, TradeDate: "2025-01-10",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a := &Action{StockCode: "600519", ActionType: ActionDividend, Price: 0.35, Shares: 1000, TradeDate: "2025-07-05"}
+	if _, err := svc.CreateAction(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if a.Fee == nil || *a.Fee != 0 {
+		t.Fatalf("fee = %v, want 0（分红不该收手续费）", a.Fee)
+	}
+
+	hs, _ := svc.ListHoldings(ctx)
+	if hs[0].Shares != 1000 {
+		t.Fatalf("shares = %d, want 1000（分红不改股数）", hs[0].Shares)
+	}
+	if got := hs[0].IncomeRealized; got < 349.9 || got > 350.1 {
+		t.Fatalf("income_realized = %.2f, want 350", got)
+	}
+}
+
+func TestService_DividendEventDilutesCost(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewService(repo)
+	svc.SetClock(fixedClock(2026, 1, 10))
+	ctx := context.Background()
+
+	if _, err := svc.CreateAction(ctx, &Action{
+		StockCode: "600519", ActionType: ActionBuy, Price: 10, Shares: 1000, TradeDate: "2025-01-10",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.UpsertDividendEvent(ctx, &DividendEvent{
+		StockCode: "600519", ExDate: "2025-06-20", CashPerShare: 0.40,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hs, _ := svc.ListHoldings(ctx)
+	if got := hs[0].CostPrice; got < 9.59 || got > 9.61 {
+		t.Fatalf("cost_price = %.4f, want 9.60（除权事件应摊薄）", got)
+	}
+	if got := hs[0].CostPriceRaw; got < 9.99 || got > 10.01 {
+		t.Fatalf("cost_price_raw = %.4f, want 10.00（原值必须保留）", got)
+	}
+}
+
+// ★ 这条是整个分红模块的核心防线：手工分红流水 + 除权事件同时存在时，
+//   绝不能既摊薄成本又计已实现，否则同一笔钱被算两次。
+func TestService_ManualDividendSuppressesEventDilution(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewService(repo)
+	svc.SetClock(fixedClock(2026, 1, 10))
+	ctx := context.Background()
+
+	_, _ = svc.CreateAction(ctx, &Action{
+		StockCode: "600519", ActionType: ActionBuy, Price: 10, Shares: 1000, TradeDate: "2025-01-10",
+	})
+	_, _ = svc.CreateAction(ctx, &Action{
+		StockCode: "600519", ActionType: ActionDividend, Price: 0.40, Shares: 1000, TradeDate: "2025-06-25",
+	})
+	_, _ = svc.UpsertDividendEvent(ctx, &DividendEvent{
+		StockCode: "600519", ExDate: "2025-06-20", CashPerShare: 0.40,
+	})
+
+	hs, _ := svc.ListHoldings(ctx)
+	if got := hs[0].CostPrice; got < 9.99 || got > 10.01 {
+		t.Fatalf("cost_price = %.4f, want 10.00（已有手工分红流水，不得再摊薄）", got)
+	}
+	if got := hs[0].IncomeRealized; got < 399.9 || got > 400.1 {
+		t.Fatalf("income_realized = %.2f, want 400", got)
+	}
+	if got := hs[0].DividendPerShare; got != 0 {
+		t.Fatalf("dividend_per_share = %.4f, want 0", got)
+	}
+}
+
+func TestService_DividendEventUpsertIsIdempotent(t *testing.T) {
+	repo := newFakeRepo()
+	svc := NewService(repo)
+	svc.SetClock(fixedClock(2026, 1, 10))
+	ctx := context.Background()
+
+	_, _ = svc.CreateAction(ctx, &Action{
+		StockCode: "600519", ActionType: ActionBuy, Price: 10, Shares: 1000, TradeDate: "2025-01-10",
+	})
+	for i := 0; i < 3; i++ {
+		if _, err := svc.UpsertDividendEvent(ctx, &DividendEvent{
+			StockCode: "600519", ExDate: "2025-06-20", CashPerShare: 0.40,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	evs, _ := svc.ListDividendEvents(ctx, "600519")
+	if len(evs) != 1 {
+		t.Fatalf("events = %d, want 1（同一 ex_date 必须去重）", len(evs))
+	}
+	hs, _ := svc.ListHoldings(ctx)
+	if got := hs[0].CostPrice; got < 9.59 || got > 9.61 {
+		t.Fatalf("cost_price = %.4f, want 9.60（重复导入不得重复摊薄）", got)
+	}
+}
+
+func TestService_DividendEventRejectsBadInput(t *testing.T) {
+	svc := NewService(newFakeRepo())
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		e    DividendEvent
+	}{
+		{"空代码", DividendEvent{ExDate: "2025-06-20", CashPerShare: 0.4}},
+		{"坏日期", DividendEvent{StockCode: "600519", ExDate: "2025/06/20", CashPerShare: 0.4}},
+		{"负派息", DividendEvent{StockCode: "600519", ExDate: "2025-06-20", CashPerShare: -1}},
+		{"空事件", DividendEvent{StockCode: "600519", ExDate: "2025-06-20"}},
+	}
+	for _, c := range cases {
+		if _, err := svc.UpsertDividendEvent(ctx, &c.e); err == nil {
+			t.Fatalf("%s: 期望报错，实际通过", c.name)
+		}
+	}
 }

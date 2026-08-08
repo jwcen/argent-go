@@ -393,3 +393,83 @@ func scanActions(rows *sql.Rows) ([]portfolio.Action, error) {
 	}
 	return out, rows.Err()
 }
+
+// ---- Dividend events ----
+
+const dividendCols = `id, stock_code, ex_date, cash_per_share, bonus_ratio, source, note, created_at`
+
+func (r *PortfolioRepo) ListDividendEvents(ctx context.Context, code string) ([]portfolio.DividendEvent, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+dividendCols+` FROM dividend_events WHERE stock_code = ? ORDER BY ex_date DESC`, code)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list dividend events: %w", err)
+	}
+	defer rows.Close()
+	return scanDividendEvents(rows)
+}
+
+func (r *PortfolioRepo) ListAllDividendEvents(ctx context.Context) ([]portfolio.DividendEvent, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+dividendCols+` FROM dividend_events ORDER BY stock_code, ex_date`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list all dividend events: %w", err)
+	}
+	defer rows.Close()
+	return scanDividendEvents(rows)
+}
+
+// UpsertDividendEvent 按 (stock_code, ex_date) 唯一键幂等写入。
+// 用 ON CONFLICT 而不是先查后写：并发导入时先查后写会漏判，
+// 而重复插入一条除权事件会让成本被摊薄两次——这类错账很难被发现。
+func (r *PortfolioRepo) UpsertDividendEvent(ctx context.Context, e *portfolio.DividendEvent) (int64, error) {
+	res, err := r.db.ExecContext(ctx,
+		`INSERT INTO dividend_events (stock_code, ex_date, cash_per_share, bonus_ratio, source, note, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(stock_code, ex_date) DO UPDATE SET
+		     cash_per_share = excluded.cash_per_share,
+		     bonus_ratio    = excluded.bonus_ratio,
+		     source         = excluded.source,
+		     note           = excluded.note`,
+		e.StockCode, e.ExDate, e.CashPerShare, e.BonusRatio, e.Source, e.Note, formatTime(time.Now()))
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: upsert dividend event: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if id == 0 {
+		// ON CONFLICT 走了 UPDATE 分支，LastInsertId 不可靠，回查一次
+		_ = r.db.QueryRowContext(ctx,
+			`SELECT id FROM dividend_events WHERE stock_code = ? AND ex_date = ?`,
+			e.StockCode, e.ExDate).Scan(&id)
+	}
+	e.ID = id
+	return id, nil
+}
+
+func (r *PortfolioRepo) DeleteDividendEvent(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM dividend_events WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("sqlite: delete dividend event: %w", err)
+	}
+	return nil
+}
+
+func scanDividendEvents(rows *sql.Rows) ([]portfolio.DividendEvent, error) {
+	out := make([]portfolio.DividendEvent, 0)
+	for rows.Next() {
+		var e portfolio.DividendEvent
+		var source, note sql.NullString
+		var createdAt sql.NullString
+		if err := rows.Scan(&e.ID, &e.StockCode, &e.ExDate, &e.CashPerShare,
+			&e.BonusRatio, &source, &note, &createdAt); err != nil {
+			return nil, err
+		}
+		e.Source = source.String
+		e.Note = note.String
+		e.CreatedAt = createdAt.String
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
