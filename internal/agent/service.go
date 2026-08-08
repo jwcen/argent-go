@@ -147,6 +147,11 @@ func (t *PortfolioTools) GetQuote(ctx context.Context, code string) (string, err
 	return fmt.Sprintf("%s(%s) 现价%.2f 涨跌%.2f%%", q.StockName, q.StockCode, q.Price, q.ChangePct), nil
 }
 
+// IsConfigured 报告 LLM 是否已配置 API key。未配置时 AskStream 走本地演示降级。
+func (s *Service) IsConfigured() bool {
+	return s.cfg.APIKey != ""
+}
+
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v

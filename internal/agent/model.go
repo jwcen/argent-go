@@ -36,3 +36,23 @@ func BuildMessages(systemPrompt, userInput string) []*schema.Message {
 		},
 	}
 }
+
+// HistoryTurn 是前端带来的历史对话片段（user/assistant 配对），用于支撑追问语境。
+type HistoryTurn struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// BuildMessagesWithHistory 在 BuildMessages 基础上，把历史多轮对话前置到本轮用户输入之前。
+func BuildMessagesWithHistory(systemPrompt string, history []HistoryTurn, userInput string) []*schema.Message {
+	msgs := []*schema.Message{{Role: schema.System, Content: systemPrompt}}
+	for _, h := range history {
+		role := schema.User
+		if h.Role == "assistant" {
+			role = schema.Assistant
+		}
+		msgs = append(msgs, &schema.Message{Role: role, Content: h.Content})
+	}
+	msgs = append(msgs, &schema.Message{Role: schema.User, Content: userInput})
+	return msgs
+}
