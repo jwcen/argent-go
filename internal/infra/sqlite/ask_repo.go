@@ -37,7 +37,7 @@ func (r *AskRepo) ListSessions(ctx context.Context, userID int64) ([]agent.Sessi
 	}
 	defer rows.Close()
 
-	var out []agent.Session
+	out := make([]agent.Session, 0)
 	for rows.Next() {
 		var s agent.Session
 		var updated sql.NullString
@@ -131,7 +131,7 @@ func (r *AskRepo) ListMessages(ctx context.Context, sessionID int64) ([]agent.Me
 	}
 	defer rows.Close()
 
-	var out []agent.Message
+	out := make([]agent.Message, 0)
 	for rows.Next() {
 		var m agent.Message
 		var metaJSON, created sql.NullString

@@ -46,6 +46,14 @@ func (s *Service) ListActions(ctx context.Context, code string) ([]Action, error
 	return s.repo.ListActions(ctx, code)
 }
 
+// GetAction 按主键取单条流水；不存在时返回 (nil, nil)。
+func (s *Service) GetAction(ctx context.Context, id int64) (*Action, error) {
+	if id <= 0 {
+		return nil, ErrNotFound
+	}
+	return s.repo.GetAction(ctx, id)
+}
+
 // CreateAction 创建一笔流水并自动重算持仓聚合。
 //
 // 若 Fee 为 nil，用 broker 费率自动估算（无 broker 则用默认费率）。

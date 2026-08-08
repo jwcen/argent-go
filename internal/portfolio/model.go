@@ -94,6 +94,8 @@ type Repository interface {
 
 	ListActions(ctx context.Context, code string) ([]Action, error)
 	ListAllActions(ctx context.Context) ([]Action, error)
+	// GetAction 按主键取单条流水；不存在时返回 (nil, nil)。
+	GetAction(ctx context.Context, id int64) (*Action, error)
 	CreateAction(ctx context.Context, a *Action) (int64, error)
 	UpdateAction(ctx context.Context, a *Action) error
 	DeleteAction(ctx context.Context, id int64) error

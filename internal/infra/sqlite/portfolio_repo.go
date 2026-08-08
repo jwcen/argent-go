@@ -31,7 +31,7 @@ func (r *PortfolioRepo) ListHoldings(ctx context.Context) ([]portfolio.Holding, 
 	}
 	defer rows.Close()
 
-	var out []portfolio.Holding
+	out := make([]portfolio.Holding, 0)
 	for rows.Next() {
 		var h portfolio.Holding
 		var purchaseDate sql.NullString
@@ -82,7 +82,7 @@ func (r *PortfolioRepo) UpsertHolding(ctx context.Context, h *portfolio.Holding)
 		   broker = excluded.broker,
 		   updated_at = ?`,
 		h.StockCode, h.StockName, h.Shares, h.CostPrice, h.PurchaseDate, h.Broker,
-		time.Now().Format(timeLayout), time.Now().Format(timeLayout))
+		formatTime(time.Now()), formatTime(time.Now()))
 	if err != nil {
 		return fmt.Errorf("sqlite: upsert holding: %w", err)
 	}
@@ -121,6 +121,27 @@ func (r *PortfolioRepo) ListAllActions(ctx context.Context) ([]portfolio.Action,
 	}
 	defer rows.Close()
 	return scanActions(rows)
+}
+
+// GetAction 走主键索引取单条，避免为了定位一行而把整张流水表读进内存。
+// 不存在时返回 (nil, nil)，由调用方决定是 404 还是其他语义。
+func (r *PortfolioRepo) GetAction(ctx context.Context, id int64) (*portfolio.Action, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, stock_code, action_type, price, shares, tranche_id, note,
+		        trade_date, trade_time, fee, broker, created_at
+		 FROM position_actions WHERE id = ?`, id)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: get action: %w", err)
+	}
+	defer rows.Close()
+	out, err := scanActions(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return &out[0], nil
 }
 
 func (r *PortfolioRepo) CreateAction(ctx context.Context, a *portfolio.Action) (int64, error) {
@@ -168,7 +189,7 @@ func (r *PortfolioRepo) ListBrokers(ctx context.Context) ([]portfolio.Broker, er
 	}
 	defer rows.Close()
 
-	var out []portfolio.Broker
+	out := make([]portfolio.Broker, 0)
 	for rows.Next() {
 		var b portfolio.Broker
 		var isDefault int
@@ -263,7 +284,7 @@ func (r *PortfolioRepo) UpsertThesis(ctx context.Context, t *portfolio.Thesis) e
 		`INSERT INTO position_thesis (code, name, thesis, updated_at)
 		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT(code) DO UPDATE SET name = excluded.name, thesis = excluded.thesis, updated_at = ?`,
-		t.Code, t.Name, t.Thesis, time.Now().Format(timeLayout), time.Now().Format(timeLayout))
+		t.Code, t.Name, t.Thesis, formatTime(time.Now()), formatTime(time.Now()))
 	if err != nil {
 		return fmt.Errorf("sqlite: upsert thesis: %w", err)
 	}
@@ -288,7 +309,7 @@ func (r *PortfolioRepo) ListWatchlist(ctx context.Context) ([]portfolio.Watchlis
 	}
 	defer rows.Close()
 
-	var out []portfolio.WatchlistItem
+	out := make([]portfolio.WatchlistItem, 0)
 	for rows.Next() {
 		var w portfolio.WatchlistItem
 		var name sql.NullString
@@ -343,7 +364,7 @@ func mapErr(err error) error {
 }
 
 func scanActions(rows *sql.Rows) ([]portfolio.Action, error) {
-	var out []portfolio.Action
+	out := make([]portfolio.Action, 0)
 	for rows.Next() {
 		var a portfolio.Action
 		var trancheID sql.NullInt64

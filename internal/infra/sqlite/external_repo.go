@@ -49,7 +49,7 @@ func (r *ExternalRepo) GetAsset(ctx context.Context, id int64) (*external.Asset,
 }
 
 func scanAssets(rows *sql.Rows) ([]external.Asset, error) {
-	var out []external.Asset
+	out := make([]external.Asset, 0)
 	for rows.Next() {
 		var a external.Asset
 		var platform, note, startDate, closedDate sql.NullString
@@ -127,7 +127,7 @@ func (r *ExternalRepo) ListActions(ctx context.Context, assetID int64) ([]extern
 	}
 	defer rows.Close()
 
-	var out []external.Action
+	out := make([]external.Action, 0)
 	for rows.Next() {
 		var a external.Action
 		var shares, unitPrice, interestPart sql.NullFloat64
@@ -200,7 +200,7 @@ func (r *ExternalRepo) ListDCASchedules(ctx context.Context) ([]external.DCASche
 	}
 	defer rows.Close()
 
-	var out []external.DCASchedule
+	out := make([]external.DCASchedule, 0)
 	for rows.Next() {
 		var d external.DCASchedule
 		var dom, dow sql.NullInt64

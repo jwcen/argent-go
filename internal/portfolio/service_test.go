@@ -69,6 +69,16 @@ func (f *fakeRepo) ListAllActions(ctx context.Context) ([]Action, error) {
 	return out, nil
 }
 
+func (f *fakeRepo) GetAction(ctx context.Context, id int64) (*Action, error) {
+	for _, a := range f.actions {
+		if a.ID == id {
+			cp := *a
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+
 func (f *fakeRepo) CreateAction(ctx context.Context, a *Action) (int64, error) {
 	a.ID = f.nextID
 	f.nextID++

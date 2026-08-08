@@ -185,22 +185,17 @@ func (h *PortfolioHandler) UpdateAction(c *gin.Context) {
 		Fee:        req.Fee,
 		Broker:     req.Broker,
 	}
-	// 需要先查出 stock_code 用于重算
-	actions, err := svc.ListActions(c.Request.Context(), "")
-	if err != nil && !errors.Is(err, portfolio.ErrInvalidCode) {
-		WriteError(c, http.StatusInternalServerError, err.Error())
+	// 需要先查出 stock_code 用于重算——走主键索引，不做全表扫描。
+	existing, err := svc.GetAction(c.Request.Context(), id)
+	if err != nil {
+		writePortfolioError(c, err)
 		return
 	}
-	for _, act := range actions {
-		if act.ID == id {
-			a.StockCode = act.StockCode
-			break
-		}
-	}
-	if a.StockCode == "" {
+	if existing == nil {
 		WriteError(c, http.StatusNotFound, "action not found")
 		return
 	}
+	a.StockCode = existing.StockCode
 	if err := svc.UpdateAction(c.Request.Context(), a); err != nil {
 		writePortfolioError(c, err)
 		return
