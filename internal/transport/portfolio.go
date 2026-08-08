@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/jwcen/argent-go/internal/auth"
 	"github.com/jwcen/argent-go/internal/infra/sqlite"
+	"github.com/jwcen/argent-go/internal/market"
 	"github.com/jwcen/argent-go/internal/portfolio"
 )
 
@@ -18,12 +20,14 @@ import (
 // 注意：portfolio 数据存在每用户独立库（users/u{id}.db）里，
 // 所以不能在 bootstrap 时固定一个 repo——需要按请求获取当前用户的 DB。
 // dbFn 就是这个「按 userID 取 *sql.DB」的函数，由 bootstrap 注入 store.Manager.User。
+// kline 用于净值曲线叠加沪深300基准；nil 时不叠加（沙箱无外网时即如此）。
 type PortfolioHandler struct {
-	dbFn func(userID int64) (*sql.DB, error)
+	dbFn  func(userID int64) (*sql.DB, error)
+	kline market.KlineProvider
 }
 
-func NewPortfolioHandler(dbFn func(userID int64) (*sql.DB, error)) *PortfolioHandler {
-	return &PortfolioHandler{dbFn: dbFn}
+func NewPortfolioHandler(dbFn func(userID int64) (*sql.DB, error), kline market.KlineProvider) *PortfolioHandler {
+	return &PortfolioHandler{dbFn: dbFn, kline: kline}
 }
 
 // Register 挂载 /api/portfolio 和 /api/brokers 下的路由。
@@ -43,6 +47,7 @@ func (h *PortfolioHandler) Register(r gin.IRouter) {
 	g.GET("/:code/dividends", h.ListDividendEvents)
 	g.POST("/:code/dividends", h.UpsertDividendEvent)
 	g.DELETE("/dividends/:id", h.DeleteDividendEvent)
+	g.GET("/curve", h.Curve)
 
 	wl := r.Group("/watchlist")
 	wl.GET("", h.ListWatchlist)
@@ -540,4 +545,87 @@ func (h *PortfolioHandler) DeleteDividendEvent(c *gin.Context) {
 		return
 	}
 	WriteJSON(c, http.StatusOK, gin.H{"ok": true})
+}
+
+// Curve 返回组合净值曲线（TWR + 成本基线市值 + 沪深300基准 + 指标）。
+// days 为轴长上限（默认 120，最大 500）。
+func (h *PortfolioHandler) Curve(c *gin.Context) {
+	svc, err := h.svc(c)
+	if err != nil {
+		WriteError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "120"))
+	db, err := h.dbFn(auth.MustUserID(c.Request.Context()))
+	if err != nil {
+		WriteError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ext := sqlite.NewExternalRepo(db)
+	curve, err := svc.BuildCurve(c.Request.Context(), days, ext)
+	if err != nil {
+		WriteError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if h.kline != nil {
+		attachBenchmark(c.Request.Context(), curve, h.kline)
+	}
+	WriteJSON(c, http.StatusOK, curve)
+}
+
+// attachBenchmark 尝试叠加沪深300基准（归一 100）。网络不可达时静默跳过。
+func attachBenchmark(ctx context.Context, curve *portfolio.Curve, kline market.KlineProvider) {
+	const benchCode = "sh000300"
+	kl, err := kline.Kline(ctx, benchCode, len(curve.Dates)+10)
+	if err != nil || len(kl) < 2 {
+		return
+	}
+	closeByDate := make(map[string]float64, len(kl))
+	for _, k := range kl {
+		closeByDate[k.Date] = k.Close
+	}
+	raw := make([]float64, len(curve.Dates))
+	have := make([]bool, len(curve.Dates))
+	var last float64
+	got := false
+	for i, d := range curve.Dates {
+		if v, ok := closeByDate[d]; ok {
+			last = v
+			got = true
+		}
+		if got {
+			raw[i] = last
+			have[i] = true
+		}
+	}
+	start := -1
+	for i := range have {
+		if have[i] {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return
+	}
+	b0 := raw[start]
+	if b0 <= 0 {
+		return
+	}
+	bench := make([]float64, len(curve.Dates))
+	for i := 0; i < len(curve.Dates); i++ {
+		if i < start || !have[i] {
+			bench[i] = 100
+			continue
+		}
+		bench[i] = raw[i] / b0 * 100
+	}
+	curve.Bench = bench
+	curve.BenchName = "沪深300"
+	if have[len(curve.Dates)-1] {
+		bre := raw[len(curve.Dates)-1]/b0*100 - 100
+		curve.Metrics.BenchReturnPct = &bre
+		ex := curve.Metrics.ReturnPct - bre
+		curve.Metrics.ExcessPct = &ex
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/jwcen/argent-go/internal/auth"
+	"github.com/jwcen/argent-go/internal/market"
 	"github.com/jwcen/argent-go/internal/transport/middleware"
 	"github.com/jwcen/argent-go/internal/transport/ws"
 )
@@ -23,6 +24,9 @@ type Deps struct {
 
 	// Market 行情数据源 handler（/api/market/*）。nil 不挂载。
 	Market *MarketHandler
+
+	// Kline 日 K 线数据源，供净值曲线叠加沪深300基准；nil 不叠加。
+	Kline market.KlineProvider
 
 	// Agent LLM 问股 handler（/api/ask/*）。nil 不挂载。
 	Agent *AgentHandler
@@ -61,7 +65,7 @@ func New(d Deps) *gin.Engine {
 		protected.Use(middleware.RequireAuth(d.Auth))
 
 		if d.UserDB != nil {
-			NewPortfolioHandler(d.UserDB).Register(protected)
+			NewPortfolioHandler(d.UserDB, d.Kline).Register(protected)
 			NewExternalHandler(d.UserDB).Register(protected)
 			NewDataHandler(d.UserDB).Register(protected)
 		}
