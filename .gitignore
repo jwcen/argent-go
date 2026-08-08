@@ -15,3 +15,6 @@ learns/
 
 # 运行时数据目录（SQLite 库文件）
 /data/
+
+# 本地环境变量（含 LLM key 等密钥，绝不进版本库）
+.env

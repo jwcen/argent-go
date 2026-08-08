@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -43,6 +45,8 @@ func (a *App) Close() error {
 }
 
 func Build(ctx context.Context) (*App, error) {
+	loadDotEnv(".env")
+
 	logger := buildLogger()
 
 	mgr, err := store.Open(ctx, store.Config{
@@ -134,4 +138,34 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// loadDotEnv 读取当前目录的 .env 文件，把 KEY=VALUE 注入环境变量。
+// 仅注入尚未设置的键（不覆盖已存在的环境/Shell 变量）。
+// 文件不存在或某行无法解析时静默跳过——没有 .env 也能正常运行（走默认值）。
+// .env 含密钥，已在 .gitignore 中排除，不进版本库。
+func loadDotEnv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		idx := strings.IndexByte(line, '=')
+		if idx < 0 {
+			continue
+		}
+		k := strings.TrimSpace(line[:idx])
+		v := strings.TrimSpace(line[idx+1:])
+		v = strings.Trim(v, `"'`)
+		if k != "" && os.Getenv(k) == "" {
+			_ = os.Setenv(k, v)
+		}
+	}
 }
