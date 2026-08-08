@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -10,14 +11,21 @@ import (
 )
 
 // MarketHandler 把行情数据源适配成 HTTP 接口。
+//
+// 行情是 best-effort 外部依赖：沙箱无外网或数据源抖动时，所有读接口都
+// 优雅降级为「空数据 + 200」，而不是 500（原则：sandbox 无源优雅降级）。
 type MarketHandler struct {
 	quoter  market.Quoter
 	kliner  market.KlineProvider
 	indices market.IndexProvider
+	logger  *slog.Logger
 }
 
-func NewMarketHandler(q market.Quoter, k market.KlineProvider, idx market.IndexProvider) *MarketHandler {
-	return &MarketHandler{quoter: q, kliner: k, indices: idx}
+func NewMarketHandler(q market.Quoter, k market.KlineProvider, idx market.IndexProvider, logger *slog.Logger) *MarketHandler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &MarketHandler{quoter: q, kliner: k, indices: idx, logger: logger}
 }
 
 func (h *MarketHandler) Register(r gin.IRouter) {
@@ -35,14 +43,17 @@ func (h *MarketHandler) Quote(c *gin.Context) {
 	code := c.Param("code")
 	quotes, err := h.quoter.Quote(c.Request.Context(), []string{code})
 	if err != nil {
-		c.JSON(500, gin.H{"detail": err.Error()})
+		// 数据源不可达（沙箱无外网等）：降级为空，不 500
+		h.logger.Warn("market quote failed, degrade to empty", "code", code, "err", err)
+		c.JSON(200, nil)
 		return
 	}
 	if q, ok := quotes[code]; ok {
 		c.JSON(200, q)
 		return
 	}
-	c.JSON(404, gin.H{"detail": "no data"})
+	// 有数据源但查不到该 code：同样返回空（非错误）
+	c.JSON(200, nil)
 }
 
 // GET /api/market/quote?codes=600519,000001 — 批量报价
@@ -55,7 +66,8 @@ func (h *MarketHandler) BatchQuote(c *gin.Context) {
 	codes := splitCodes(codesStr)
 	quotes, err := h.quoter.Quote(c.Request.Context(), codes)
 	if err != nil {
-		c.JSON(500, gin.H{"detail": err.Error()})
+		h.logger.Warn("market batch quote failed, degrade to empty", "err", err)
+		c.JSON(200, []any{})
 		return
 	}
 	// 返回数组
@@ -77,7 +89,8 @@ func (h *MarketHandler) History(c *gin.Context) {
 	}
 	kl, err := h.kliner.Kline(c.Request.Context(), code, days)
 	if err != nil {
-		c.JSON(500, gin.H{"detail": err.Error()})
+		h.logger.Warn("market history failed, degrade to empty", "err", err)
+		c.JSON(200, []any{})
 		return
 	}
 	c.JSON(200, kl)
@@ -91,7 +104,8 @@ func (h *MarketHandler) Indices(c *gin.Context) {
 	}
 	idx, err := h.indices.Indices(c.Request.Context())
 	if err != nil {
-		c.JSON(500, gin.H{"detail": err.Error()})
+		h.logger.Warn("market indices failed, degrade to empty", "err", err)
+		c.JSON(200, []any{})
 		return
 	}
 	c.JSON(200, idx)
