@@ -59,6 +59,13 @@ func (h *PortfolioHandler) Register(r gin.IRouter) {
 	b.POST("", h.CreateBroker)
 	b.PUT("/:id", h.UpdateBroker)
 	b.DELETE("/:id", h.DeleteBroker)
+
+	a := r.Group("/accounts")
+	a.GET("", h.ListAccounts)
+	a.POST("", h.CreateAccount)
+	a.PUT("/:id", h.UpdateAccount)
+	a.DELETE("/:id", h.DeleteAccount)
+	a.GET("/summaries", h.AccountSummaries)
 }
 
 // svc 从 gin context 取出当前用户，获取其用户库，构造一次性的 service。
@@ -84,7 +91,18 @@ func (h *PortfolioHandler) ListHoldings(c *gin.Context) {
 		WriteError(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	holdings, err := svc.ListHoldings(c.Request.Context())
+	// 支持 ?account_id=N 筛选（0 或不传 = 全部）
+	var holdings []portfolio.Holding
+	if aidStr := c.Query("account_id"); aidStr != "" {
+		aid, err2 := strconv.ParseInt(aidStr, 10, 64)
+		if err2 != nil {
+			WriteError(c, http.StatusBadRequest, "invalid account_id")
+			return
+		}
+		holdings, err = svc.ListHoldingsByAccount(c.Request.Context(), aid)
+	} else {
+		holdings, err = svc.ListHoldings(c.Request.Context())
+	}
 	if err != nil {
 		WriteError(c, http.StatusInternalServerError, err.Error())
 		return
@@ -132,6 +150,7 @@ type createActionReq struct {
 	TradeTime  string   `json:"trade_time"`
 	Fee        *float64 `json:"fee"`
 	Broker     string   `json:"broker"`
+	AccountID  *int64   `json:"account_id,omitempty"`
 }
 
 func (h *PortfolioHandler) CreateAction(c *gin.Context) {
@@ -156,6 +175,7 @@ func (h *PortfolioHandler) CreateAction(c *gin.Context) {
 		TradeTime:  req.TradeTime,
 		Fee:        req.Fee,
 		Broker:     req.Broker,
+		AccountID:  req.AccountID,
 	}
 	id, err := svc.CreateAction(c.Request.Context(), a)
 	if err != nil {
@@ -456,6 +476,116 @@ func (h *PortfolioHandler) DeleteBroker(c *gin.Context) {
 	WriteJSON(c, http.StatusOK, gin.H{"ok": true})
 }
 
+// ---- Accounts ----
+
+func (h *PortfolioHandler) ListAccounts(c *gin.Context) {
+	svc, err := h.svc(c)
+	if err != nil {
+		WriteError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	accounts, err := svc.ListAccounts(c.Request.Context())
+	if err != nil {
+		WriteError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	WriteJSON(c, http.StatusOK, accounts)
+}
+
+type createAccountReq struct {
+	Name      string              `json:"name" binding:"required"`
+	Kind      portfolio.AccountKind `json:"kind"`
+	Color     string              `json:"color"`
+	SortOrder int                 `json:"sort_order"`
+}
+
+func (h *PortfolioHandler) CreateAccount(c *gin.Context) {
+	svc, err := h.svc(c)
+	if err != nil {
+		WriteError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var req createAccountReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		WriteError(c, http.StatusBadRequest, "name is required")
+		return
+	}
+	a := &portfolio.Account{
+		Name:      req.Name,
+		Kind:      req.Kind,
+		Color:     req.Color,
+		SortOrder: req.SortOrder,
+	}
+	id, err := svc.CreateAccount(c.Request.Context(), a)
+	if err != nil {
+		writePortfolioError(c, err)
+		return
+	}
+	WriteJSON(c, http.StatusCreated, gin.H{"id": id})
+}
+
+func (h *PortfolioHandler) UpdateAccount(c *gin.Context) {
+	svc, err := h.svc(c)
+	if err != nil {
+		WriteError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		WriteError(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+	var req createAccountReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		WriteError(c, http.StatusBadRequest, "name is required")
+		return
+	}
+	a := &portfolio.Account{
+		ID:        id,
+		Name:      req.Name,
+		Kind:      req.Kind,
+		Color:     req.Color,
+		SortOrder: req.SortOrder,
+	}
+	if err := svc.UpdateAccount(c.Request.Context(), a); err != nil {
+		writePortfolioError(c, err)
+		return
+	}
+	WriteJSON(c, http.StatusOK, gin.H{"ok": true})
+}
+
+func (h *PortfolioHandler) DeleteAccount(c *gin.Context) {
+	svc, err := h.svc(c)
+	if err != nil {
+		WriteError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		WriteError(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := svc.DeleteAccount(c.Request.Context(), id); err != nil {
+		writePortfolioError(c, err)
+		return
+	}
+	WriteJSON(c, http.StatusOK, gin.H{"ok": true})
+}
+
+func (h *PortfolioHandler) AccountSummaries(c *gin.Context) {
+	svc, err := h.svc(c)
+	if err != nil {
+		WriteError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	summaries, err := svc.AccountSummaries(c.Request.Context())
+	if err != nil {
+		WriteError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	WriteJSON(c, http.StatusOK, summaries)
+}
+
 // ---- error mapping ----
 
 func writePortfolioError(c *gin.Context, err error) {
@@ -470,6 +600,8 @@ func writePortfolioError(c *gin.Context, err error) {
 	case errors.Is(err, portfolio.ErrOversell):
 		WriteError(c, http.StatusConflict, err.Error())
 	case errors.Is(err, portfolio.ErrDuplicateBroker):
+		WriteError(c, http.StatusConflict, err.Error())
+	case errors.Is(err, portfolio.ErrDuplicateName):
 		WriteError(c, http.StatusConflict, err.Error())
 	case errors.Is(err, portfolio.ErrBrokerInUse):
 		WriteError(c, http.StatusConflict, err.Error())

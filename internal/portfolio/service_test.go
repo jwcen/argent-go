@@ -186,6 +186,24 @@ func (f *fakeRepo) RemoveWatchlist(ctx context.Context, code string) error {
 	return nil
 }
 
+// ---- Account stubs (for interface compliance) ----
+
+func (f *fakeRepo) ListAccounts(ctx context.Context) ([]Account, error) { return nil, nil }
+func (f *fakeRepo) GetAccount(ctx context.Context, id int64) (*Account, error) {
+	return nil, ErrNotFound
+}
+func (f *fakeRepo) CreateAccount(ctx context.Context, a *Account) (int64, error) {
+	a.ID = f.nextID
+	f.nextID++
+	return a.ID, nil
+}
+func (f *fakeRepo) UpdateAccount(ctx context.Context, a *Account) error { return nil }
+func (f *fakeRepo) DeleteAccount(ctx context.Context, id int64) error  { return nil }
+func (f *fakeRepo) ListHoldingsByAccount(ctx context.Context, accountID int64) ([]Holding, error) {
+	return f.ListHoldings(ctx)
+}
+func (f *fakeRepo) AccountSummaries(ctx context.Context) ([]AccountSummary, error) { return nil, nil }
+
 // ---- tests ----
 
 func TestCreateAction_RecomputesHolding(t *testing.T) {

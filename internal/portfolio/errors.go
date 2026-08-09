@@ -12,4 +12,5 @@ var (
 	ErrOversell        = errors.New("portfolio: sell shares exceed holding")
 	ErrBrokerInUse     = errors.New("portfolio: broker in use by holdings or actions")
 	ErrDuplicateBroker = errors.New("portfolio: broker name already exists")
+	ErrDuplicateName  = errors.New("portfolio: name already exists")
 )

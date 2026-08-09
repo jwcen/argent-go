@@ -36,6 +36,7 @@ type Holding struct {
 	CostPrice    float64 `json:"cost_price"`
 	PurchaseDate string  `json:"purchase_date"`
 	Broker       string  `json:"broker"`
+	AccountID    *int64  `json:"account_id,omitempty"` // 归属账户（NULL=未归类）
 	CreatedAt    string  `json:"created_at"`
 	UpdatedAt    string  `json:"updated_at"`
 
@@ -79,6 +80,7 @@ type Action struct {
 	TradeTime  string     `json:"trade_time,omitempty"`
 	Fee        *float64   `json:"fee,omitempty"`
 	Broker     string     `json:"broker,omitempty"`
+	AccountID  *int64     `json:"account_id,omitempty"` // 归属账户（NULL=未归类）
 	CreatedAt  string     `json:"created_at"`
 }
 
@@ -118,6 +120,38 @@ type RealizedResult struct {
 	RealizedCarry float64 `json:"realized_carry"`
 }
 
+// AccountKind 账户类型枚举。
+type AccountKind string
+
+const (
+	AccountStock  AccountKind = "stock"  // A 股证券账户
+	AccountFund   AccountKind = "fund"   // 基金平台（天天基金/支付宝等）
+	AccountBank   AccountKind = "bank"   // 银行理财
+	AccountCustom AccountKind = "custom" // 自定义
+)
+
+// Account 是用户自定义的投资账户分组。
+//
+// 一个用户可以创建多个账户（如「华泰证券」「支付宝」「天天基金」），
+// 持仓和流水通过 account_id 归属到具体账户，实现按账户统计汇总。
+type Account struct {
+	ID        int64      `json:"id"`
+	Name      string     `json:"name"`
+	Kind      AccountKind `json:"kind"`
+	Color     string     `json:"color,omitempty"` // 可选颜色标签
+	SortOrder int        `json:"sort_order"`
+	CreatedAt string     `json:"created_at"`
+}
+
+// AccountSummary 是单个账户的持仓汇总快照。
+type AccountSummary struct {
+	AccountID    int64   `json:"account_id"`
+	AccountName  string  `json:"account_name"`
+	HoldingCount int     `json:"holding_count"`
+	TotalCost    float64 `json:"total_cost"`
+	TotalShares  int64   `json:"total_shares"`
+}
+
 // Repository 抽象 portfolio 所需的全部持久化操作。
 type Repository interface {
 	ListHoldings(ctx context.Context) ([]Holding, error)
@@ -152,4 +186,15 @@ type Repository interface {
 	// UpsertDividendEvent 按 (stock_code, ex_date) 幂等写入，重复导入不会产生双份摊薄。
 	UpsertDividendEvent(ctx context.Context, e *DividendEvent) (int64, error)
 	DeleteDividendEvent(ctx context.Context, id int64) error
+
+	// ---------- Accounts ----------
+	ListAccounts(ctx context.Context) ([]Account, error)
+	GetAccount(ctx context.Context, id int64) (*Account, error)
+	CreateAccount(ctx context.Context, a *Account) (int64, error)
+	UpdateAccount(ctx context.Context, a *Account) error
+	DeleteAccount(ctx context.Context, id int64) error
+	// ListHoldingsByAccount 按 account_id 过滤持仓（id=0 或 NULL 表示未归类）。
+	ListHoldingsByAccount(ctx context.Context, accountID int64) ([]Holding, error)
+	// AccountSummaryByAll 返回每个账户的持仓汇总（含「未归类」组）。
+	AccountSummaries(ctx context.Context) ([]AccountSummary, error)
 }

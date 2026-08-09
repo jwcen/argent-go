@@ -43,6 +43,12 @@ func (s *Service) ListHoldings(ctx context.Context) ([]Holding, error) {
 	if err != nil {
 		return nil, err
 	}
+	return s.enrichHoldings(ctx, holdings)
+}
+
+// enrichHoldings 为持仓列表补齐分红衍生字段（成本摊薄/已实现收益等）。
+// 入参 holdings 可以是全部持仓或按账户过滤后的子集。
+func (s *Service) enrichHoldings(ctx context.Context, holdings []Holding) ([]Holding, error) {
 	if len(holdings) == 0 {
 		return holdings, nil
 	}
@@ -363,10 +369,12 @@ func (s *Service) recomputeHolding(ctx context.Context, code string) error {
 		return s.repo.DeleteHolding(ctx, code)
 	}
 
-	// 取 stock_name（从现有 holding 或第一条流水推断）
+	// 取 stock_name 和 account_id（从现有 holding 保留归属）
 	name := ""
+	var accountID *int64
 	if h, _ := s.repo.GetHolding(ctx, code); h != nil {
 		name = h.StockName
+		accountID = h.AccountID
 	}
 	if name == "" && len(actions) > 0 {
 		// 从流水里无法直接拿 name，保持空
@@ -386,6 +394,7 @@ func (s *Service) recomputeHolding(ctx context.Context, code string) error {
 		Shares:       state.Shares,
 		CostPrice:    state.CostPriceRaw.YuanF(),
 		PurchaseDate: purchaseDate,
+		AccountID:    accountID,
 	}
 	return s.repo.UpsertHolding(ctx, h)
 }
@@ -446,6 +455,48 @@ func toLedgerActions(actions []Action) []ledger.Action {
 		})
 	}
 	return out
+}
+
+// ---- Accounts ----
+
+func (s *Service) ListAccounts(ctx context.Context) ([]Account, error) {
+	return s.repo.ListAccounts(ctx)
+}
+
+func (s *Service) CreateAccount(ctx context.Context, a *Account) (int64, error) {
+	if a.Name == "" {
+		return 0, ErrInvalidCode
+	}
+	// 默认 kind 为 custom
+	if a.Kind == "" {
+		a.Kind = AccountCustom
+	}
+	return s.repo.CreateAccount(ctx, a)
+}
+
+func (s *Service) UpdateAccount(ctx context.Context, a *Account) error {
+	if a.ID == 0 {
+		return ErrNotFound
+	}
+	return s.repo.UpdateAccount(ctx, a)
+}
+
+func (s *Service) DeleteAccount(ctx context.Context, id int64) error {
+	return s.repo.DeleteAccount(ctx, id)
+}
+
+// ListHoldingsByAccount 按 account_id 过滤持仓（0=未归类）。
+func (s *Service) ListHoldingsByAccount(ctx context.Context, accountID int64) ([]Holding, error) {
+	holdings, err := s.repo.ListHoldingsByAccount(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	return s.enrichHoldings(ctx, holdings)
+}
+
+// AccountSummaries 返回每个账户的持仓汇总。
+func (s *Service) AccountSummaries(ctx context.Context) ([]AccountSummary, error) {
+	return s.repo.AccountSummaries(ctx)
 }
 
 func validateAction(a *Action) error {
