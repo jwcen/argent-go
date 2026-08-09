@@ -9,6 +9,10 @@ import (
 	"github.com/jwcen/argent-go/internal/ledger"
 )
 
+// NameResolver 从外部数据源（如行情接口）根据代码查询股票名称。
+// 查不到或源不可达时返回空字符串（不报错，优雅降级）。
+type NameResolver func(ctx context.Context, code string) string
+
 // Service 是 portfolio 域的用例层。
 //
 // 它编排 Repository（持久化）和 ledger（纯计算）：
@@ -17,14 +21,18 @@ import (
 //
 // 不 import gin / sqlite，可被单测直接调用（fake repo + 可注入时钟）。
 type Service struct {
-	repo Repository
-	now  func() time.Time
+	repo         Repository
+	now          func() time.Time
+	nameResolver NameResolver // 可选：首次建 holding 时自动查名
 }
 
 // NewService 构造 portfolio 服务。
 func NewService(repo Repository) *Service {
 	return &Service{repo: repo, now: time.Now}
 }
+
+// SetNameResolver 注入名称解析器（可选，不注入则名称保持为空）。
+func (s *Service) SetNameResolver(r NameResolver) { s.nameResolver = r }
 
 // SetClock 注入时钟（测试用）。
 func (s *Service) SetClock(f func() time.Time) { s.now = f }
@@ -74,6 +82,23 @@ func (s *Service) enrichHoldings(ctx context.Context, holdings []Holding) ([]Hol
 	today := s.now()
 	for i := range holdings {
 		code := holdings[i].StockCode
+
+		// 名称补填：首次录入时可能没查到名称，这里在读取时补救
+		if holdings[i].StockName == "" && s.nameResolver != nil {
+			if resolved := s.nameResolver(ctx, code); resolved != "" {
+				holdings[i].StockName = resolved
+				// 异步写回 DB，下次不用再查
+				go func(c string, n string) {
+					ctx2, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					if h, err := s.repo.GetHolding(ctx2, c); err == nil && h != nil {
+						h.StockName = n
+						_ = s.repo.UpsertHolding(ctx2, h)
+					}
+				}(code, resolved)
+			}
+		}
+
 		acts := actsByCode[code]
 		if len(acts) == 0 {
 			continue
@@ -376,8 +401,11 @@ func (s *Service) recomputeHolding(ctx context.Context, code string) error {
 		name = h.StockName
 		accountID = h.AccountID
 	}
-	if name == "" && len(actions) > 0 {
-		// 从流水里无法直接拿 name，保持空
+	if name == "" && s.nameResolver != nil {
+		// 首次录入或名称丢失：从行情源自动查询
+		if resolved := s.nameResolver(ctx, code); resolved != "" {
+			name = resolved
+		}
 	}
 
 	var purchaseDate string

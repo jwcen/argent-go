@@ -21,13 +21,15 @@ import (
 // 所以不能在 bootstrap 时固定一个 repo——需要按请求获取当前用户的 DB。
 // dbFn 就是这个「按 userID 取 *sql.DB」的函数，由 bootstrap 注入 store.Manager.User。
 // kline 用于净值曲线叠加沪深300基准；nil 时不叠加（沙箱无外网时即如此）。
+// quoter 用于首次创建持仓时自动查询股票名称；nil 则跳过（保持空）。
 type PortfolioHandler struct {
-	dbFn  func(userID int64) (*sql.DB, error)
-	kline market.KlineProvider
+	dbFn   func(userID int64) (*sql.DB, error)
+	kline  market.KlineProvider
+	quoter market.Quoter
 }
 
-func NewPortfolioHandler(dbFn func(userID int64) (*sql.DB, error), kline market.KlineProvider) *PortfolioHandler {
-	return &PortfolioHandler{dbFn: dbFn, kline: kline}
+func NewPortfolioHandler(dbFn func(userID int64) (*sql.DB, error), kline market.KlineProvider, quoter market.Quoter) *PortfolioHandler {
+	return &PortfolioHandler{dbFn: dbFn, kline: kline, quoter: quoter}
 }
 
 // Register 挂载 /api/portfolio 和 /api/brokers 下的路由。
@@ -80,7 +82,20 @@ func (h *PortfolioHandler) svc(c *gin.Context) (*portfolio.Service, error) {
 		return nil, err
 	}
 	repo := sqlite.NewPortfolioRepo(db)
-	return portfolio.NewService(repo), nil
+	svc := portfolio.NewService(repo)
+	if h.quoter != nil {
+		svc.SetNameResolver(func(ctx context.Context, code string) string {
+			quotes, err := h.quoter.Quote(ctx, []string{code})
+			if err != nil || quotes == nil {
+				return ""
+			}
+			if q, ok := quotes[code]; ok {
+				return q.StockName
+			}
+			return ""
+		})
+	}
+	return svc, nil
 }
 
 // ---- Holdings ----

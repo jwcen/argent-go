@@ -25,6 +25,9 @@ type Deps struct {
 	// Market 行情数据源 handler（/api/market/*）。nil 不挂载。
 	Market *MarketHandler
 
+	// Quoter 行情报价源，供 portfolio 首次建持仓时自动查股票名称。nil 则跳过。
+	Quoter market.Quoter
+
 	// Kline 日 K 线数据源，供净值曲线叠加沪深300基准；nil 不叠加。
 	Kline market.KlineProvider
 
@@ -65,7 +68,7 @@ func New(d Deps) *gin.Engine {
 		protected.Use(middleware.RequireAuth(d.Auth))
 
 		if d.UserDB != nil {
-			NewPortfolioHandler(d.UserDB, d.Kline).Register(protected)
+			NewPortfolioHandler(d.UserDB, d.Kline, d.Quoter).Register(protected)
 			NewExternalHandler(d.UserDB).Register(protected)
 			NewDataHandler(d.UserDB).Register(protected)
 		}
