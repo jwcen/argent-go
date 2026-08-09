@@ -222,7 +222,7 @@ func (s *Service) CreateAction(ctx context.Context, a *Action) (int64, error) {
 	}
 	a.ID = id
 
-	if err := s.recomputeHolding(ctx, a.StockCode); err != nil {
+	if err := s.recomputeHolding(ctx, a.StockCode, a.AccountID); err != nil {
 		return id, fmt.Errorf("portfolio: recompute after create action: %w", err)
 	}
 	return id, nil
@@ -241,7 +241,7 @@ func (s *Service) UpdateAction(ctx context.Context, a *Action) error {
 	if err := s.repo.UpdateAction(ctx, a); err != nil {
 		return err
 	}
-	if err := s.recomputeHolding(ctx, a.StockCode); err != nil {
+	if err := s.recomputeHolding(ctx, a.StockCode, a.AccountID); err != nil {
 		return fmt.Errorf("portfolio: recompute after update action: %w", err)
 	}
 	return nil
@@ -268,7 +268,7 @@ func (s *Service) DeleteAction(ctx context.Context, id int64) error {
 	if err := s.repo.DeleteAction(ctx, id); err != nil {
 		return err
 	}
-	if err := s.recomputeHolding(ctx, code); err != nil {
+	if err := s.recomputeHolding(ctx, code, nil); err != nil {
 		return fmt.Errorf("portfolio: recompute after delete action: %w", err)
 	}
 	return nil
@@ -380,7 +380,9 @@ func (s *Service) RemoveWatchlist(ctx context.Context, code string) error {
 // ---- internal ----
 
 // recomputeHolding 读全部流水 → ledger 重算 → 写回 holdings。
-func (s *Service) recomputeHolding(ctx context.Context, code string) error {
+// overrideAccountID 非 nil 时优先用作该持仓的归属账户（首次创建/编辑流水时指定），
+// 否则从现有 holding 保留归属，避免重算时丢掉用户选的账户分组。
+func (s *Service) recomputeHolding(ctx context.Context, code string, overrideAccountID *int64) error {
 	actions, err := s.repo.ListActions(ctx, code)
 	if err != nil {
 		return err
@@ -397,9 +399,14 @@ func (s *Service) recomputeHolding(ctx context.Context, code string) error {
 	// 取 stock_name 和 account_id（从现有 holding 保留归属）
 	name := ""
 	var accountID *int64
-	if h, _ := s.repo.GetHolding(ctx, code); h != nil {
-		name = h.StockName
-		accountID = h.AccountID
+	if existing, _ := s.repo.GetHolding(ctx, code); existing != nil {
+		name = existing.StockName
+		accountID = existing.AccountID
+	}
+	// 调用方（新增/编辑流水）明确指定了归属账户时优先采用，
+	// 否则沿用现有持仓的账户（首次建持仓且未指定时为空=未归类）。
+	if overrideAccountID != nil {
+		accountID = overrideAccountID
 	}
 	if name == "" && s.nameResolver != nil {
 		// 首次录入或名称丢失：从行情源自动查询
