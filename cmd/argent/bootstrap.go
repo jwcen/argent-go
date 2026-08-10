@@ -80,6 +80,10 @@ func Build(ctx context.Context) (*App, error) {
 	sina := market.NewSinaSource()
 	cascade := market.NewCascade(em, sina, logger)
 
+	// 基金净值查询走新浪 f_ 接口（A 股报价源无法复用）
+	mh := transport.NewMarketHandler(cascade, cascade, em, logger)
+	mh.SetFundQuoter(sina)
+
 	// WebSocket hub
 	wsHub := ws.NewHub(cascade, logger)
 	wsHub.Start(ctx)
@@ -98,10 +102,11 @@ func Build(ctx context.Context) (*App, error) {
 		Logger: logger,
 		Auth:   authSvc,
 		UserDB: userDB,
-		Market: transport.NewMarketHandler(cascade, cascade, em, logger),
+		Market: mh,
 		Quoter: cascade,
 		Kline:  cascade,
 		Agent:  transport.NewAgentHandler(agentSvc, userDB),
+		Import: transport.NewImportHandler(agentSvc, logger),
 		WSHub:  wsHub,
 		Static: static,
 	})

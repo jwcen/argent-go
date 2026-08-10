@@ -34,6 +34,9 @@ type Deps struct {
 	// Agent LLM 问股 handler（/api/ask/*）。nil 不挂载。
 	Agent *AgentHandler
 
+	// Import 截图导入 handler（/api/import/*）。nil 不挂载。
+	Import *ImportHandler
+
 	// WSHub WebSocket 推送 hub，nil 不挂载 /ws。
 	WSHub *ws.Hub
 
@@ -77,6 +80,9 @@ func New(d Deps) *gin.Engine {
 		}
 		if d.Agent != nil {
 			d.Agent.Register(protected)
+		}
+		if d.Import != nil {
+			d.Import.Register(protected)
 		}
 		if d.WSHub != nil {
 			protected.GET("/ws", d.WSHub.HandleWS)

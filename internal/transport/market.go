@@ -18,6 +18,7 @@ type MarketHandler struct {
 	quoter  market.Quoter
 	kliner  market.KlineProvider
 	indices market.IndexProvider
+	funds   market.FundQuoter // 场外基金净值查询；nil 时 /funds 返回空
 	logger  *slog.Logger
 }
 
@@ -28,10 +29,16 @@ func NewMarketHandler(q market.Quoter, k market.KlineProvider, idx market.IndexP
 	return &MarketHandler{quoter: q, kliner: k, indices: idx, logger: logger}
 }
 
+// SetFundQuoter 注入场外基金净值查询源（可选；不注入则 /api/market/funds 返回空）。
+func (h *MarketHandler) SetFundQuoter(f market.FundQuoter) {
+	h.funds = f
+}
+
 func (h *MarketHandler) Register(r gin.IRouter) {
 	g := r.Group("/market")
 	g.GET("/quote/:code", h.Quote)
 	g.GET("/quote", h.BatchQuote)
+	g.GET("/funds", h.Funds)
 	g.GET("/history/:code", h.History)
 	g.GET("/indices", h.Indices)
 	g.GET("/trading-day", h.TradingDay)
@@ -74,6 +81,30 @@ func (h *MarketHandler) BatchQuote(c *gin.Context) {
 	list := make([]*market.Quote, 0, len(quotes))
 	for _, q := range quotes {
 		list = append(list, q)
+	}
+	c.JSON(200, list)
+}
+
+// GET /api/market/funds?codes=110011,161725 — 场外基金净值批量查询
+func (h *MarketHandler) Funds(c *gin.Context) {
+	if h.funds == nil {
+		c.JSON(200, []any{})
+		return
+	}
+	codesStr := c.Query("codes")
+	if codesStr == "" {
+		c.JSON(400, gin.H{"detail": "codes param required"})
+		return
+	}
+	fqs, err := h.funds.QuoteFunds(c.Request.Context(), splitCodes(codesStr))
+	if err != nil {
+		h.logger.Warn("market funds failed, degrade to empty", "err", err)
+		c.JSON(200, []any{})
+		return
+	}
+	list := make([]*market.FundQuote, 0, len(fqs))
+	for _, f := range fqs {
+		list = append(list, f)
 	}
 	c.JSON(200, list)
 }

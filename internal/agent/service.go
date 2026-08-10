@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -19,19 +20,30 @@ import (
 
 // Config LLM 配置。
 type Config struct {
-	Provider string // "anthropic" / "openai"
-	APIKey   string
-	BaseURL  string
-	Model    string // 模型名
+	Provider       string   // "anthropic" / "openai"
+	APIKey         string
+	BaseURL        string
+	Model          string   // 主模型名
+	FallbackModels []string // 备用模型轮换列表（仅从 ARGENT_LLM_FALLBACK_MODELS 环境变量读，不写进代码）
 }
 
 // LoadConfig 从环境变量加载 LLM 配置。
 func LoadConfig() Config {
+	// 备用模型列表：逗号分隔，仅来自环境变量，绝不硬编码在代码里。
+	var fb []string
+	if raw := os.Getenv("ARGENT_LLM_FALLBACK_MODELS"); raw != "" {
+		for _, p := range strings.Split(raw, ",") {
+			if t := strings.TrimSpace(p); t != "" {
+				fb = append(fb, t)
+			}
+		}
+	}
 	return Config{
-		Provider: envOr("ARGENT_LLM_PROVIDER", "openai"),
-		APIKey:   os.Getenv("ARGENT_LLM_API_KEY"),
-		BaseURL:  os.Getenv("ARGENT_LLM_BASE_URL"),
-		Model:    envOr("ARGENT_LLM_MODEL", "gpt-4o-mini"),
+		Provider:       envOr("ARGENT_LLM_PROVIDER", "openai"),
+		APIKey:         os.Getenv("ARGENT_LLM_API_KEY"),
+		BaseURL:        os.Getenv("ARGENT_LLM_BASE_URL"),
+		Model:          envOr("ARGENT_LLM_MODEL", "gpt-4o-mini"),
+		FallbackModels: fb,
 	}
 }
 
@@ -51,60 +63,130 @@ func NewService(cfg Config, quoter market.Quoter, kliner market.KlineProvider, l
 }
 
 // Chat 处理一次非流式问答。
-// Stage 8 简化版：直接调 ChatModel，不走 ReAct agent 循环。
-// 后续可升级为 eino 的 flow/agent/react。
+// 主模型不可用时（额度耗尽 / 凭证失效 / 模型下架等）自动切换到备用模型。
 func (s *Service) Chat(ctx context.Context, messages []*schema.Message) (string, error) {
-	chatModel, err := s.buildModel(ctx)
-	if err != nil {
-		return "", fmt.Errorf("agent: build model: %w", err)
+	var lastErr error
+	for _, modelName := range s.orderedCandidates() {
+		chatModel, err := s.buildModelWithName(ctx, modelName)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		resp, err := chatModel.Generate(ctx, messages)
+		if err != nil {
+			if isExhaustionError(err) {
+				lastErr = err
+				s.logger.Warn("LLM 主模型不可用/额度耗尽，尝试下一个备用模型",
+					"model", modelName, "error", err)
+				continue
+			}
+			return "", fmt.Errorf("agent: generate: %w", err)
+		}
+		return resp.Content, nil
 	}
-
-	resp, err := chatModel.Generate(ctx, messages)
-	if err != nil {
-		return "", fmt.Errorf("agent: generate: %w", err)
+	if lastErr != nil {
+		return "", fmt.Errorf("agent: 所有模型均不可用，最后错误: %w", lastErr)
 	}
-	return resp.Content, nil
+	return "", fmt.Errorf("agent: 没有可用模型")
 }
 
 // ChatStream 流式问答（SSE）。
-// 返回一个 channel，逐块输出 LLM 的回复。
+// 主模型不可用时自动切换备用模型；返回一个 channel，逐块输出 LLM 的回复。
 func (s *Service) ChatStream(ctx context.Context, messages []*schema.Message) (<-chan string, error) {
-	chatModel, err := s.buildModel(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("agent: build model: %w", err)
-	}
-
-	stream, err := chatModel.Stream(ctx, messages)
-	if err != nil {
-		return nil, fmt.Errorf("agent: stream: %w", err)
-	}
-
-	out := make(chan string, 64)
-	go func() {
-		defer close(out)
-		for {
-			msg, err := stream.Recv()
-			if err != nil {
-				return
-			}
-			if msg.Content != "" {
-				out <- msg.Content
-			}
+	var lastErr error
+	for _, modelName := range s.orderedCandidates() {
+		chatModel, err := s.buildModelWithName(ctx, modelName)
+		if err != nil {
+			lastErr = err
+			continue
 		}
-	}()
-	return out, nil
+		stream, err := chatModel.Stream(ctx, messages)
+		if err != nil {
+			if isExhaustionError(err) {
+				lastErr = err
+				s.logger.Warn("LLM 主模型不可用/额度耗尽，尝试下一个备用模型",
+					"model", modelName, "error", err)
+				continue
+			}
+			return nil, fmt.Errorf("agent: stream: %w", err)
+		}
+		out := make(chan string, 64)
+		go func() {
+			defer close(out)
+			for {
+				msg, err := stream.Recv()
+				if err != nil {
+					return
+				}
+				if msg.Content != "" {
+					out <- msg.Content
+				}
+			}
+		}()
+		return out, nil
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("agent: 所有模型均不可用，最后错误: %w", lastErr)
+	}
+	return nil, fmt.Errorf("agent: 没有可用模型")
 }
 
-// buildModel 根据配置创建 ChatModel。
-// 使用 eino-ext 的 OpenAI / Anthropic 适配器。
+// buildModel 根据配置创建主模型的 ChatModel（保留以兼容外部调用）。
 func (s *Service) buildModel(ctx context.Context) (model.ChatModel, error) {
+	return s.buildModelWithName(ctx, s.cfg.Model)
+}
+
+// buildModelWithName 用指定模型名创建 ChatModel（备用模型轮换时用）。
+func (s *Service) buildModelWithName(ctx context.Context, modelName string) (model.ChatModel, error) {
 	if s.cfg.APIKey == "" {
 		return nil, fmt.Errorf("agent: LLM API key not configured")
 	}
+	cfg := s.cfg
+	cfg.Model = modelName
+	return newOpenAIModel(ctx, cfg)
+}
 
-	// 简化版：统一用 OpenAI 兼容接口（Anthropic 也支持 OpenAI 兼容 API）。
-	// 后续可按 provider 分支用 eino-ext/components/model/{openai,claude}。
-	return newOpenAIModel(ctx, s.cfg)
+// orderedCandidates 构造候选模型顺序：主模型优先，其次备用列表，去重保序。
+func (s *Service) orderedCandidates() []string {
+	seen := make(map[string]bool)
+	var out []string
+	add := func(m string) {
+		if m != "" && !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	add(s.cfg.Model)
+	for _, m := range s.cfg.FallbackModels {
+		add(m)
+	}
+	return out
+}
+
+// isExhaustionError 判断该错误是否属于“换模型可能解决”的不可用/耗尽类错误。
+// 与原版 Python llm_client._is_exhaustion_error 对齐：401/403/429 直接判，
+// 其它通过关键字（quota/额度/key 无效/模型不存在等）识别，避免在代码里硬编码模型名。
+func isExhaustionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "401") || strings.Contains(msg, "403") ||
+		strings.Contains(msg, "429") || strings.Contains(msg, "forbidden") {
+		return true
+	}
+	kw := []string{
+		"quota", "额度", "余额", "exhaust", "insufficient",
+		"invalid api key", "unauthorized", "api key",
+		"model", "not found", "deprecat", "unavailable",
+		"token", "expired", "used up",
+	}
+	for _, k := range kw {
+		if strings.Contains(msg, k) {
+			return true
+		}
+	}
+	return false
 }
 
 // PortfolioTools 把 portfolio service 的能力暴露给 agent。
@@ -148,8 +230,36 @@ func (t *PortfolioTools) GetQuote(ctx context.Context, code string) (string, err
 }
 
 // IsConfigured 报告 LLM 是否已配置 API key。未配置时 AskStream 走本地演示降级。
+// IsConfigured 判断 LLM 是否配置（有 API key）。
 func (s *Service) IsConfigured() bool {
 	return s.cfg.APIKey != ""
+}
+
+// ParseImage 把一张截图交给多模态 LLM 解析，返回模型的原始文本回复。
+//
+// imageB64 是 base64 编码的图片二进制；mimeType 形如 "image/png"。
+// 模型是否支持视觉由配置决定；不支持时 Chat 会返回错误，由调用方兜底提示。
+func (s *Service) ParseImage(ctx context.Context, imageB64, mimeType, systemPrompt, userPrompt string) (string, error) {
+	msgs := []*schema.Message{
+		{Role: schema.System, Content: systemPrompt},
+		{
+			Role: schema.User,
+			UserInputMultiContent: []schema.MessageInputPart{
+				{Type: schema.ChatMessagePartTypeText, Text: userPrompt},
+				{
+					Type: schema.ChatMessagePartTypeImageURL,
+					Image: &schema.MessageInputImage{
+						MessagePartCommon: schema.MessagePartCommon{
+							Base64Data: &imageB64,
+							MIMEType:   mimeType,
+						},
+						Detail: schema.ImageURLDetailHigh,
+					},
+				},
+			},
+		},
+	}
+	return s.Chat(ctx, msgs)
 }
 
 func envOr(key, fallback string) string {
