@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/jwcen/argent-go/internal/agent"
 	"github.com/jwcen/argent-go/internal/auth"
+	"github.com/jwcen/argent-go/internal/external"
 	"github.com/jwcen/argent-go/internal/infra/sqlite"
+	"github.com/jwcen/argent-go/internal/portfolio"
 )
 
 // AgentHandler 把 LLM agent 与问问市场会话持久化适配成 HTTP 接口。
@@ -260,7 +263,37 @@ func (h *AgentHandler) AskStream(c *gin.Context) {
 	systemPrompt := "你是一个 A 股投资助手，基于行情、走势、新闻与大盘情绪客观解读。"
 	messages := agent.BuildMessagesWithHistory(systemPrompt, req.History, req.Question)
 
-	stream, err := h.svc.ChatStream(c.Request.Context(), messages)
+	// 当前用户身份 → 构造用户级 service，注入 ctx 供用户数据类工具(get_holdings 等)使用。
+	uid := auth.MustUserID(c.Request.Context())
+	db, dbErr := h.dbFn(uid)
+	if dbErr != nil {
+		writeSSE(c, flusher, map[string]any{"type": "error", "error": "取用户库失败: " + dbErr.Error()})
+		return
+	}
+	pSvc := portfolio.NewService(sqlite.NewPortfolioRepo(db))
+	eSvc := external.NewService(sqlite.NewExternalRepo(db))
+	ctx := agent.WithUserServices(c.Request.Context(), &portfolioStoreAdapter{pSvc}, &externalStoreAdapter{eSvc})
+
+	// 工具事件 → SSE 实时透给前端。工具回调与文本循环分属不同 goroutine，
+	// 用同一把锁串行化 SSE 写入，避免 ResponseWriter 并发写损坏。
+	var mu sync.Mutex
+	safeWrite := func(ev map[string]any) {
+		mu.Lock()
+		defer mu.Unlock()
+		writeSSE(c, flusher, ev)
+	}
+	ctx = agent.WithToolSink(ctx, func(ev agent.ToolEvent) {
+		// 长结果/参数截断展示，避免前端卡片爆栈；完整结果已在模型上下文里。
+		if len(ev.Result) > 800 {
+			ev.Result = ev.Result[:800] + "…"
+		}
+		if len(ev.Args) > 400 {
+			ev.Args = ev.Args[:400] + "…"
+		}
+		safeWrite(map[string]any{"type": "tool", "tool": ev})
+	})
+
+	stream, err := h.svc.ChatStreamReAct(ctx, messages)
 	if err != nil {
 		writeSSE(c, flusher, map[string]any{"type": "error", "error": err.Error()})
 		return
@@ -270,7 +303,7 @@ func (h *AgentHandler) AskStream(c *gin.Context) {
 		if chunk == "" {
 			continue
 		}
-		writeSSE(c, flusher, map[string]any{"type": "answer", "text": chunk})
+		safeWrite(map[string]any{"type": "answer", "text": chunk})
 	}
 }
 
@@ -281,6 +314,78 @@ func writeSSE(c *gin.Context, f http.Flusher, ev any) {
 	if f != nil {
 		f.Flush()
 	}
+}
+
+// ── agent 用户级 service 适配器 ──
+// 把真实 *portfolio.Service / *external.Service 适配成 agent 所需的
+// 最小接口，并在转换时把真实类型映射为 agent 领域结构（避免 agent 包反向依赖 sqlite）。
+
+type portfolioStoreAdapter struct{ svc *portfolio.Service }
+
+func (a *portfolioStoreAdapter) ListHoldings(ctx context.Context) ([]agent.PortfolioHolding, error) {
+	hs, err := a.svc.ListHoldings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]agent.PortfolioHolding, 0, len(hs))
+	for _, h := range hs {
+		out = append(out, agent.PortfolioHolding{
+			StockCode: h.StockCode, StockName: h.StockName, Shares: h.Shares,
+			CostPrice: h.CostPrice, WeightedDays: h.WeightedDays,
+		})
+	}
+	return out, nil
+}
+
+func (a *portfolioStoreAdapter) ListActions(ctx context.Context, code string) ([]agent.PortfolioAction, error) {
+	var (
+		acts []portfolio.Action
+		err  error
+	)
+	if code == "" {
+		acts, err = a.svc.ListAllActions(ctx)
+	} else {
+		acts, err = a.svc.ListActions(ctx, code)
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := make([]agent.PortfolioAction, 0, len(acts))
+	for _, ac := range acts {
+		out = append(out, agent.PortfolioAction{
+			StockCode: ac.StockCode, ActionType: string(ac.ActionType),
+			Price: ac.Price, Shares: ac.Shares, TradeDate: ac.TradeDate, Note: ac.Note,
+		})
+	}
+	return out, nil
+}
+
+func (a *portfolioStoreAdapter) GetThesis(ctx context.Context, code string) (*agent.PortfolioThesis, error) {
+	t, err := a.svc.GetThesis(ctx, code)
+	if err != nil {
+		return nil, err
+	}
+	if t == nil {
+		return nil, nil
+	}
+	return &agent.PortfolioThesis{Code: t.Code, Name: t.Name, Thesis: t.Thesis}, nil
+}
+
+type externalStoreAdapter struct{ svc *external.Service }
+
+func (a *externalStoreAdapter) ListAssets(ctx context.Context) ([]agent.ExternalAsset, error) {
+	as, err := a.svc.ListAssets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]agent.ExternalAsset, 0, len(as))
+	for _, a2 := range as {
+		out = append(out, agent.ExternalAsset{
+			AssetType: string(a2.AssetType), Name: a2.Name,
+			CostAmount: a2.CostAmount, Shares: a2.Shares,
+		})
+	}
+	return out, nil
 }
 
 // mockChunks 把文本切成定长片段，模拟打字机式流式输出。

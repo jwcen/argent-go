@@ -198,6 +198,11 @@ func (s *Service) ListActions(ctx context.Context, code string) ([]Action, error
 	return s.repo.ListActions(ctx, code)
 }
 
+// ListAllActions 列出当前用户全部成交流水（不区分标的）。供 agent 工具"不传 code = 全部"使用。
+func (s *Service) ListAllActions(ctx context.Context) ([]Action, error) {
+	return s.repo.ListAllActions(ctx)
+}
+
 // GetAction 按主键取单条流水；不存在时返回 (nil, nil)。
 func (s *Service) GetAction(ctx context.Context, id int64) (*Action, error) {
 	if id <= 0 {

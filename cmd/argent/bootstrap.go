@@ -97,6 +97,7 @@ func Build(ctx context.Context) (*App, error) {
 
 	// LLM agent
 	agentSvc := agent.NewService(agent.LoadConfig(), cascade, cascade, logger)
+	agentSvc.SetFundQuoter(sina) // 基金净值走新浪 f_ 接口
 
 	engine := transport.New(transport.Deps{
 		Logger: logger,

@@ -52,6 +52,7 @@ type Service struct {
 	cfg    Config
 	quoter market.Quoter
 	kliner market.KlineProvider
+	fundQ  market.FundQuoter
 	logger *slog.Logger
 }
 
@@ -60,6 +61,31 @@ func NewService(cfg Config, quoter market.Quoter, kliner market.KlineProvider, l
 		logger = slog.Default()
 	}
 	return &Service{cfg: cfg, quoter: quoter, kliner: kliner, logger: logger}
+}
+
+// SetFundQuoter 注入基金净值数据源（可选）。
+func (s *Service) SetFundQuoter(q market.FundQuoter) {
+	s.fundQ = q
+}
+
+// buildToolCallingModel 用指定模型名构造一个支持工具调用的 ChatModel。
+// eino-ext 的 OpenAI 适配器返回的 *ChatModel 实现了 model.ToolCallingChatModel。
+func (s *Service) buildToolCallingModel(ctx context.Context, modelName string) (model.ToolCallingChatModel, error) {
+	if s.cfg.APIKey == "" {
+		return nil, fmt.Errorf("agent: LLM API key not configured")
+	}
+	cfg := s.cfg
+	cfg.Model = modelName
+	m, err := newOpenAIModel(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	// newOpenAIModel 返回 model.ChatModel，但底层 *openai.ChatModel 实现了 ToolCallingChatModel。
+	tcm, ok := m.(model.ToolCallingChatModel)
+	if !ok {
+		return nil, fmt.Errorf("agent: 模型 %s 不支持工具调用", modelName)
+	}
+	return tcm, nil
 }
 
 // Chat 处理一次非流式问答。
