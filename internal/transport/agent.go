@@ -292,6 +292,9 @@ func (h *AgentHandler) AskStream(c *gin.Context) {
 		}
 		safeWrite(map[string]any{"type": "tool", "tool": ev})
 	})
+	ctx = agent.WithErrorSink(ctx, func(err error) {
+		safeWrite(map[string]any{"type": "error", "error": err.Error()})
+	})
 
 	stream, err := h.svc.ChatStreamReAct(ctx, messages)
 	if err != nil {

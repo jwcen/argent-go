@@ -60,7 +60,7 @@ func (s *Service) buildReactAgent(ctx context.Context, modelName string) (*react
 		ToolCallingModel: cm,
 		ToolsConfig:      compose.ToolsNodeConfig{Tools: tools, ToolCallMiddlewares: []compose.ToolMiddleware{mw}},
 		MessageModifier:  react.NewPersonaModifier(systemPromptForAgent()),
-		MaxStep:          12,
+		MaxStep:          25,
 	}
 
 	agent, err := react.NewAgent(ctx, cfg)
@@ -95,6 +95,8 @@ func (s *Service) ChatStreamReAct(ctx context.Context, messages []*schema.Messag
 				return
 			}
 			if rerr != nil {
+				// 流级错误（如 exceeds max steps）推给 transport，前端能看到原因。
+				emitError(ctx, rerr)
 				return
 			}
 			if msg != nil && msg.Content != "" {
@@ -111,9 +113,12 @@ func systemPromptForAgent() string {
 		"市场风格/资金主线、资产配置/现金理财的问题。\n" +
 		"【名称→代码一律实解析】涉及任何标的，先用 resolve_stock 把名字/行业词解析成标准代码，" +
 		"再传给 get_quote/get_trend 等工具；不要凭记忆编造代码。\n" +
+		"【批量取行情，省步数】需要同时查多只股票的实时行情时，用 get_chain_quote 一次批量取，" +
+		"不要逐只调 get_quote。get_trend 只在需要看走势时对重点标的单独调。\n" +
 		"【每个数值挂标的名】每个具体数值(价位/涨跌幅/成本/量比)都紧跟所属标的名。\n" +
-		"【个股问题】先 resolve_stock 取代码，再 get_quote+get_trend；分析涨跌把量价作为主轴。" +
+		"【个股问题】先 resolve_stock 取代码，再 get_chain_quote 批量取行情；分析涨跌把量价作为主轴。" +
 		"涉及用户自身数据(持仓/交易/配置/买入逻辑)优先用 get_holdings/get_trades/get_asset_allocation/get_thesis。\n" +
+		"【工具调用有上限】整个回答最多调 20 次工具。调够数据就立刻总结作答，不要反复确认。\n" +
 		"【客观克制】只基于工具返回的真实数据下结论，不编造；风险提示要明确但不过度恐慌。\n" +
 		"用中文作答，必要时用分点/小标题让结构清晰。"
 }

@@ -46,6 +46,35 @@ func emitTool(ctx context.Context, ev ToolEvent) {
 	}
 }
 
+// ── 流错误透传 ──
+// ReAct 图跑超 MaxStep 或内部报错时，stream.Recv() 返回 error 而非 io.EOF。
+// ChatStreamReAct 通过 ErrorSink 把这类错误推给 transport 层，前端能看到具体原因，
+// 而不是流静默截断、用户只看到一段不完整的答案。
+
+type errorSinkKey struct{}
+
+// ErrorSink 接收流级错误。
+type ErrorSink func(error)
+
+// WithErrorSink 把流错误回调挂进 ctx。
+func WithErrorSink(ctx context.Context, sink ErrorSink) context.Context {
+	return context.WithValue(ctx, errorSinkKey{}, sink)
+}
+
+func errorSinkFromCtx(ctx context.Context) ErrorSink {
+	if v, ok := ctx.Value(errorSinkKey{}).(ErrorSink); ok {
+		return v
+	}
+	return nil
+}
+
+// emitError 安全地把流错误发出去（sink 为空时静默忽略）。
+func emitError(ctx context.Context, err error) {
+	if s := errorSinkFromCtx(ctx); s != nil {
+		s(err)
+	}
+}
+
 type userCtxKey struct{}
 
 type userScope struct {
