@@ -52,6 +52,9 @@ func (s *Service) buildReactAgent(ctx context.Context, modelName string) (*react
 	if err != nil {
 		return nil, err
 	}
+	// 包一层过滤装饰器：丢弃 LLM 偶发吐出的 name 为空/非法的 tool_call，
+	// 避免 eino toolsNode 抛 "tool not found in toolsNode indexes" 拖垮整轮。
+	cm = wrapWithToolFilter(cm)
 
 	cfg := &react.AgentConfig{
 		ToolCallingModel: cm,
