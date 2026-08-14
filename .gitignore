@@ -9,6 +9,7 @@ learns/
 *.test
 *.out
 /bin/
+/argent
 
 # 本地日志文件（运行时生成，不进版本库）
 /logs/
