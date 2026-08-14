@@ -2,6 +2,7 @@ package market
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 )
 
@@ -45,4 +46,18 @@ func (c *Cascade) Kline(ctx context.Context, code string, days int) ([]KlineDay,
 		c.logger.Debug("cascade: primary kline failed, trying fallback", "err", err, "code", code)
 	}
 	return c.fallback.Kline(ctx, code, days)
+}
+
+// Indices 大盘主要指数：主源（东财）支持则优先，否则试备选源（若也实现了 IndexProvider）。
+// DataSource 接口本身不含 Indices，故用类型断言做能力探测，不强制所有源都实现。
+func (c *Cascade) Indices(ctx context.Context) ([]IndexData, error) {
+	if p, ok := c.primary.(IndexProvider); ok {
+		if idx, err := p.Indices(ctx); err == nil && len(idx) > 0 {
+			return idx, nil
+		}
+	}
+	if fb, ok := c.fallback.(IndexProvider); ok {
+		return fb.Indices(ctx)
+	}
+	return nil, fmt.Errorf("market: 无可用的大盘指数数据源")
 }

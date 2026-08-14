@@ -52,6 +52,7 @@ type Service struct {
 	cfg    Config
 	quoter market.Quoter
 	kliner market.KlineProvider
+	idxr   market.IndexProvider
 	fundQ  market.FundQuoter
 	logger *slog.Logger
 }
@@ -66,6 +67,11 @@ func NewService(cfg Config, quoter market.Quoter, kliner market.KlineProvider, l
 // SetFundQuoter 注入基金净值数据源（可选）。
 func (s *Service) SetFundQuoter(q market.FundQuoter) {
 	s.fundQ = q
+}
+
+// SetIndexProvider 注入大盘指数数据源（可选，供 get_market_indices 使用）。
+func (s *Service) SetIndexProvider(p market.IndexProvider) {
+	s.idxr = p
 }
 
 // buildToolCallingModel 用指定模型名构造一个支持工具调用的 ChatModel。

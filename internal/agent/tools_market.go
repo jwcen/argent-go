@@ -264,6 +264,41 @@ func (s *Service) toolGetFundQuote() (tool.InvokableTool, error) {
 	})
 }
 
+// ─────────────────────────── get_market_indices ───────────────────────────
+// 查大盘主要指数实时涨跌（沪指/深成/创业板/沪深300/科创50/北证50），用于市场整体氛围判断。
+
+func (s *Service) toolGetMarketIndices() (tool.InvokableTool, error) {
+	info := &schema.ToolInfo{
+		Name: "get_market_indices",
+		Desc: "查大盘主要指数实时涨跌(上证/深成指/创业板/沪深300/科创50/北证50)。回答'大盘怎么样/市场情绪/今天普涨还是普跌/指数位置'时用，作为市场整体氛围判断依据。",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
+	}
+	return defTool[*emptyArgs, string](info, func(ctx context.Context, _ *emptyArgs) (string, error) {
+		if s.idxr == nil {
+			return "未配置大盘指数数据源", nil
+		}
+		idx, err := s.idxr.Indices(ctx)
+		if err != nil {
+			return "", err
+		}
+		if len(idx) == 0 {
+			return "未获取到任何大盘指数行情", nil
+		}
+		type rec struct {
+			Code  string  `json:"code"`
+			Name  string  `json:"name"`
+			Price float64 `json:"price"`
+			Pct   float64 `json:"change_pct"`
+		}
+		out := make([]rec, 0, len(idx))
+		for _, i := range idx {
+			out = append(out, rec{Code: i.Code, Name: i.Name, Price: round1(i.Price), Pct: round1(i.ChangePct)})
+		}
+		b, _ := json.Marshal(out)
+		return string(b), nil
+	})
+}
+
 // ── 小工具 ──
 func round1(f float64) float64 {
 	return float64(int(f*10+0.5)) / 10

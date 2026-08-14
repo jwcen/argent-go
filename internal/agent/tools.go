@@ -109,6 +109,7 @@ func (s *Service) AllTools(ctx context.Context) ([]tool.BaseTool, error) {
 	add(s.toolGetChainQuote())
 	add(s.toolGetFundQuote())
 	add(s.toolResolveStock())
+	add(s.toolGetMarketIndices())
 
 	// ── 用户数据类 ──
 	add(s.toolGetHoldings())

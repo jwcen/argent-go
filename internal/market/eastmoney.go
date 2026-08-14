@@ -185,44 +185,73 @@ func parseEMQuote(body []byte) map[string]*Quote {
 	return result
 }
 
-// Indices 大盘指数。
+// indexSecids 大盘主要指数对应的东财 secid。
+// 上证 1.000001 / 深成 0.399001 / 创业板 0.399006 / 沪深300 1.000300 / 科创50 1.000688 / 北证50 0.899050。
+var indexSecids = []string{
+	"1.000001", "0.399001", "0.399006", "1.000300", "1.000688", "0.899050",
+}
+
+// emIndexResp 是 stock/get?secid=X 的响应（单只，比 ulist 稳定）。
+type emIndexResp struct {
+	Data *struct {
+		Code  string  `json:"f57"` // 代码，如 "000001"
+		Name  string  `json:"f58"` // 名称
+		Price float64 `json:"f43"` // 最新价（×100）
+		Chg   float64 `json:"f170"` // 涨跌幅（×100）
+	} `json:"data"`
+}
+
+// Indices 大盘主要指数实时涨跌。
+// 用 stock/get?secid=X（逐只拉）而非 ulist 批量：本环境下 ulist 对指数 secid 常返回空，
+// 而 stock/get 稳定可用。
 func (e *EastmoneySource) Indices(ctx context.Context) ([]IndexData, error) {
-	// 上证指数 1.000001, 深证成指 0.399001, 创业板指 0.399006, 沪深300 1.000300
-	secids := "1.000001,0.399001,0.399006,1.000300"
-	url := fmt.Sprintf("https://push2.eastmoney.com/api/qt/ulist.np/get?fields=f2,f3,f12,f14&secids=%s", secids)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Referer", "https://quote.eastmoney.com/")
+	out := make([]IndexData, 0, len(indexSecids))
+	var firstErr error
+	for _, secid := range indexSecids {
+		url := fmt.Sprintf("https://push2.eastmoney.com/api/qt/stock/get?secid=%s&fields=f43,f57,f58,f170", secid)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		req.Header.Set("Referer", "https://quote.eastmoney.com/")
 
-	resp, err := e.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("eastmoney indices: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var r emQuoteResp
-	if err := json.Unmarshal(body, &r); err != nil {
-		return nil, err
-	}
-	if r.Data == nil {
-		return nil, nil
-	}
-
-	out := make([]IndexData, 0, len(r.Data.Diff))
-	for _, d := range r.Data.Diff {
+		resp, err := e.client.Do(req)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		var r emIndexResp
+		if err := json.Unmarshal(body, &r); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if r.Data == nil {
+			continue
+		}
 		out = append(out, IndexData{
-			Code:      fmt.Sprintf("%d", d.Code),
-			Name:      d.Name,
-			Price:     d.Price / 100,
-			ChangePct: d.Chg / 100,
+			Code:      r.Data.Code,
+			Name:      r.Data.Name,
+			Price:     r.Data.Price / 100,
+			ChangePct: r.Data.Chg / 100,
 		})
+	}
+	if len(out) == 0 && firstErr != nil {
+		return nil, fmt.Errorf("eastmoney indices: %w", firstErr)
 	}
 	return out, nil
 }
