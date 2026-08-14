@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -15,13 +16,34 @@ import (
 // API: https://push2his.eastmoney.com/api/qt/stock/kline/get
 // 参数: secid=1.600519 & klt=101(日K) & fqt=1(前复权) & lmt=天数
 // 反爬：必须带 Referer: https://quote.eastmoney.com/
+
+// fallbackRT 先走环境代理（东财 stock/get、clist 等接口需经代理出网），
+// 代理失败（本机 ClashX 偶发抖动）时自动直连重试（ulist 等接口直连可用）。
+type fallbackRT struct {
+	primary   http.RoundTripper
+	secondary http.RoundTripper
+}
+
+func (f *fallbackRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := f.primary.RoundTrip(req)
+	if err != nil {
+		return f.secondary.RoundTrip(req)
+	}
+	return resp, nil
+}
+
 type EastmoneySource struct {
 	client *http.Client
 }
 
 func NewEastmoneySource() *EastmoneySource {
+	proxyRT := &http.Transport{Proxy: http.ProxyFromEnvironment}
+	directRT := &http.Transport{Proxy: func(*http.Request) (*url.URL, error) { return nil, nil }}
 	return &EastmoneySource{
-		client: &http.Client{Timeout: 15 * time.Second},
+		client: &http.Client{
+			Timeout:   15 * time.Second,
+			Transport: &fallbackRT{primary: proxyRT, secondary: directRT},
+		},
 	}
 }
 
@@ -252,6 +274,207 @@ func (e *EastmoneySource) Indices(ctx context.Context) ([]IndexData, error) {
 	}
 	if len(out) == 0 && firstErr != nil {
 		return nil, fmt.Errorf("eastmoney indices: %w", firstErr)
+	}
+	return out, nil
+}
+
+// ── 通用 stock/get 辅助 ──
+// emStockGet 是 stock/get?secid=X 的通用响应，覆盖指数/海外指数/涨跌家数所需的字段。
+type emStockGet struct {
+	Data *struct {
+		Code     string  `json:"f57"`  // 代码
+		Name     string  `json:"f58"`  // 名称
+		Price    float64 `json:"f43"`  // 最新价（×100）
+		Chg      float64 `json:"f170"` // 涨跌幅（×100）
+		Up       int     `json:"f104"` // 上涨家数
+		Down     int     `json:"f105"` // 下跌家数
+		Flat     int     `json:"f128"` // 平盘家数
+		LimitUp  int     `json:"f136"` // 涨停家数
+		LimitDn  int     `json:"f116"` // 跌停家数
+	} `json:"data"`
+}
+
+// stockGet 拉取单个 secid 的指定字段。
+func (e *EastmoneySource) stockGet(ctx context.Context, secid, fields string) (*emStockGet, error) {
+	url := fmt.Sprintf("https://push2.eastmoney.com/api/qt/stock/get?secid=%s&fields=%s", secid, fields)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Referer", "https://quote.eastmoney.com/")
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	var r emStockGet
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// ── clist 辅助（板块榜 / 板块成分股）──
+type emClistResp struct {
+	Data *struct {
+		Total int `json:"total"`
+		Diff  []struct {
+			Code  string  `json:"f12"`
+			Name  string  `json:"f14"`
+			Chg   float64 `json:"f3"`  // 涨跌幅（×100）
+			NetIn float64 `json:"f62"` // 主力净流入（元）
+		} `json:"diff"`
+	} `json:"data"`
+}
+
+// clist 拉取板块榜/成分股（clist 接口），返回 diff 数组。
+func (e *EastmoneySource) clist(ctx context.Context, fs, fields string, limit int) (*emClistResp, error) {
+	url := fmt.Sprintf("https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=%d&po=1&np=1&fltt=2&invt=2&fid=f3&fs=%s&fields=%s",
+		limit, fs, fields)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Referer", "https://quote.eastmoney.com/")
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	var r emClistResp
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// Sectors 板块榜：industry=行业板块(m:90+t:2)，concept=概念板块(m:90+t:3)，按涨跌幅降序。
+func (e *EastmoneySource) Sectors(ctx context.Context, kind string, limit int) ([]Board, error) {
+	fs := "m:90+t:2" // 行业
+	if kind == "concept" {
+		fs = "m:90+t:3" // 概念
+	}
+	if limit <= 0 {
+		limit = 15
+	}
+	r, err := e.clist(ctx, fs, "f12,f14,f3,f62", limit)
+	if err != nil {
+		return nil, err
+	}
+	if r.Data == nil || len(r.Data.Diff) == 0 {
+		return nil, nil
+	}
+	out := make([]Board, 0, len(r.Data.Diff))
+	for _, d := range r.Data.Diff {
+		out = append(out, Board{
+			Code:          d.Code,
+			Name:          d.Name,
+			ChangePct:     round2(d.Chg / 100),
+			MainNetInflow: d.NetIn,
+		})
+	}
+	return out, nil
+}
+
+// BoardStocks 某板块的成分股（按涨跌幅降序）。
+func (e *EastmoneySource) BoardStocks(ctx context.Context, boardCode string, limit int) ([]BoardStock, error) {
+	boardCode = strings.TrimPrefix(boardCode, "BK")
+	boardCode = "BK" + boardCode
+	if limit <= 0 {
+		limit = 15
+	}
+	r, err := e.clist(ctx, "b:"+boardCode, "f12,f14,f3", limit)
+	if err != nil {
+		return nil, err
+	}
+	if r.Data == nil || len(r.Data.Diff) == 0 {
+		return nil, nil
+	}
+	out := make([]BoardStock, 0, len(r.Data.Diff))
+	for _, d := range r.Data.Diff {
+		out = append(out, BoardStock{
+			Code:      d.Code,
+			Name:      d.Name,
+			ChangePct: round2(d.Chg / 100),
+		})
+	}
+	return out, nil
+}
+
+// MarketBreadth 市场宽度：取上证指数(1.000001)的涨跌家数。
+func (e *EastmoneySource) MarketBreadth(ctx context.Context) (*MarketBreadth, error) {
+	r, err := e.stockGet(ctx, "1.000001", "f104,f105,f128,f136,f116")
+	if err != nil {
+		return nil, err
+	}
+	if r.Data == nil {
+		return nil, nil
+	}
+	d := r.Data
+	ratio := 0.0
+	if d.Down > 0 {
+		ratio = round2(float64(d.Up) / float64(d.Down))
+	} else if d.Up > 0 {
+		ratio = float64(d.Up) // 下跌为0，记为上涨家数本身
+	}
+	return &MarketBreadth{
+		UpCount:     d.Up,
+		DownCount:   d.Down,
+		FlatCount:   d.Flat,
+		LimitUp:     d.LimitUp,
+		LimitDown:   d.LimitDn,
+		UpDownRatio: ratio,
+	}, nil
+}
+
+// foreignSecids 海外/亚太主要指数 secid。
+var foreignSecids = []struct {
+	secid string
+	name  string
+}{
+	{"100.DJI", "道琼斯"},
+	{"100.NDX", "纳斯达克"},
+	{"100.SPX", "标普500"},
+	{"100.HSI", "恒生指数"},
+	{"100.N225", "日经225"},
+}
+
+// ForeignIndices 海外/亚太主要指数实时涨跌。
+func (e *EastmoneySource) ForeignIndices(ctx context.Context) ([]ForeignIndex, error) {
+	out := make([]ForeignIndex, 0, len(foreignSecids))
+	var firstErr error
+	for _, fx := range foreignSecids {
+		r, err := e.stockGet(ctx, fx.secid, "f43,f57,f58,f170")
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if r.Data == nil {
+			continue
+		}
+		name := r.Data.Name
+		if name == "" {
+			name = fx.name
+		}
+		out = append(out, ForeignIndex{
+			Code:      r.Data.Code,
+			Name:      name,
+			Price:     round2(r.Data.Price / 100),
+			ChangePct: round2(r.Data.Chg / 100),
+		})
+	}
+	if len(out) == 0 && firstErr != nil {
+		return nil, fmt.Errorf("eastmoney foreign indices: %w", firstErr)
 	}
 	return out, nil
 }

@@ -97,8 +97,9 @@ func Build(ctx context.Context) (*App, error) {
 
 	// LLM agent
 	agentSvc := agent.NewService(agent.LoadConfig(), cascade, cascade, logger)
-	agentSvc.SetFundQuoter(sina)       // 基金净值走新浪 f_ 接口
-	agentSvc.SetIndexProvider(cascade) // 大盘指数（cascade 已实现 IndexProvider）
+	agentSvc.SetFundQuoter(sina)           // 基金净值走新浪 f_ 接口
+	agentSvc.SetIndexProvider(cascade)     // 大盘指数（cascade 已实现 IndexProvider）
+	agentSvc.SetSectorProvider(cascade)    // 板块/市场宽度/海外指数（cascade 已实现 SectorProvider）
 
 	engine := transport.New(transport.Deps{
 		Logger: logger,

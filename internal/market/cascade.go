@@ -61,3 +61,35 @@ func (c *Cascade) Indices(ctx context.Context) ([]IndexData, error) {
 	}
 	return nil, fmt.Errorf("market: 无可用的大盘指数数据源")
 }
+
+// Sectors 板块榜（行业/概念），委托给实现了 SectorProvider 的主源。
+func (c *Cascade) Sectors(ctx context.Context, kind string, limit int) ([]Board, error) {
+	if p, ok := c.primary.(SectorProvider); ok {
+		return p.Sectors(ctx, kind, limit)
+	}
+	return nil, fmt.Errorf("market: 主源未实现 SectorProvider")
+}
+
+// BoardStocks 板块成分股，委托给实现了 SectorProvider 的主源。
+func (c *Cascade) BoardStocks(ctx context.Context, boardCode string, limit int) ([]BoardStock, error) {
+	if p, ok := c.primary.(SectorProvider); ok {
+		return p.BoardStocks(ctx, boardCode, limit)
+	}
+	return nil, fmt.Errorf("market: 主源未实现 SectorProvider")
+}
+
+// MarketBreadth 市场宽度，委托给实现了 SectorProvider 的主源。
+func (c *Cascade) MarketBreadth(ctx context.Context) (*MarketBreadth, error) {
+	if p, ok := c.primary.(SectorProvider); ok {
+		return p.MarketBreadth(ctx)
+	}
+	return nil, fmt.Errorf("market: 主源未实现 SectorProvider")
+}
+
+// ForeignIndices 海外指数，委托给实现了 SectorProvider 的主源。
+func (c *Cascade) ForeignIndices(ctx context.Context) ([]ForeignIndex, error) {
+	if p, ok := c.primary.(SectorProvider); ok {
+		return p.ForeignIndices(ctx)
+	}
+	return nil, fmt.Errorf("market: 主源未实现 SectorProvider")
+}

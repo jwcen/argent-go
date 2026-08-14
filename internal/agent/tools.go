@@ -111,6 +111,13 @@ func (s *Service) AllTools(ctx context.Context) ([]tool.BaseTool, error) {
 	add(s.toolResolveStock())
 	add(s.toolGetMarketIndices())
 
+	// ── 市场/板块/资讯类 ──
+	add(s.toolGetSectorMomentum())
+	add(s.toolGetHotConcepts())
+	add(s.toolGetBoardStocks())
+	add(s.toolGetMarketSentiment())
+	add(s.toolGetGlobalIndices())
+
 	// ── 用户数据类 ──
 	add(s.toolGetHoldings())
 	add(s.toolGetAssetAllocation())

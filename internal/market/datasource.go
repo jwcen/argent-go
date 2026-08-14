@@ -44,6 +44,39 @@ type IndexData struct {
 	ChangePct float64 `json:"change_pct"`
 }
 
+// Board 一个板块（行业/概念）的快照。
+type Board struct {
+	Code         string  `json:"code"`          // 板块代码，如 BK1626
+	Name         string  `json:"name"`          // 板块名
+	ChangePct    float64 `json:"change_pct"`    // 板块涨跌幅 %
+	MainNetInflow float64 `json:"main_net_inflow"` // 主力净流入（元）
+}
+
+// BoardStock 板块成分股一行。
+type BoardStock struct {
+	Code      string  `json:"code"`
+	Name      string  `json:"name"`
+	ChangePct float64 `json:"change_pct"`
+}
+
+// MarketBreadth 市场宽度（涨跌家数），用于研判市场情绪。
+type MarketBreadth struct {
+	UpCount     int     `json:"up_count"`     // 上涨家数
+	DownCount   int     `json:"down_count"`   // 下跌家数
+	FlatCount   int     `json:"flat_count"`   // 平盘家数
+	LimitUp     int     `json:"limit_up"`     // 涨停家数
+	LimitDown   int     `json:"limit_down"`   // 跌停家数
+	UpDownRatio float64 `json:"up_down_ratio"` // 涨跌比 = 上涨/下跌
+}
+
+// ForeignIndex 海外/亚太指数一行。
+type ForeignIndex struct {
+	Code      string  `json:"code"`
+	Name      string  `json:"name"`
+	Price     float64 `json:"price"`
+	ChangePct float64 `json:"change_pct"`
+}
+
 // Quoter 实时报价端口。
 type Quoter interface {
 	Quote(ctx context.Context, codes []string) (map[string]*Quote, error)
@@ -57,6 +90,18 @@ type KlineProvider interface {
 // IndexProvider 大盘指数端口。
 type IndexProvider interface {
 	Indices(ctx context.Context) ([]IndexData, error)
+}
+
+// SectorProvider 板块/市场宽度端口（行业/概念板块榜、板块成分、市场情绪）。
+type SectorProvider interface {
+	// Sectors 返回板块榜，kind 为 "industry"（行业）或 "concept"（概念），按涨跌幅降序取前 limit 个。
+	Sectors(ctx context.Context, kind string, limit int) ([]Board, error)
+	// BoardStocks 返回某板块的成分股（前 limit 只，按涨跌幅降序）。
+	BoardStocks(ctx context.Context, boardCode string, limit int) ([]BoardStock, error)
+	// MarketBreadth 市场宽度（涨跌家数/涨跌停）。
+	MarketBreadth(ctx context.Context) (*MarketBreadth, error)
+	// ForeignIndices 海外/亚太主要指数（道指/纳指/标普/恒生/日经等）。
+	ForeignIndices(ctx context.Context) ([]ForeignIndex, error)
 }
 
 // Quoter+KlineProvider 组合接口，供 cascade 使用。
