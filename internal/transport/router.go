@@ -37,6 +37,9 @@ type Deps struct {
 	// Import 截图导入 handler（/api/import/*）。nil 不挂载。
 	Import *ImportHandler
 
+	// Strategy 「诚实版」策略栏 + 回测 handler（/api/strategy/*）。nil 不挂载。
+	Strategy *StrategyHandler
+
 	// WSHub WebSocket 推送 hub，nil 不挂载 /ws。
 	WSHub *ws.Hub
 
@@ -83,6 +86,9 @@ func New(d Deps) *gin.Engine {
 		}
 		if d.Import != nil {
 			d.Import.Register(protected)
+		}
+		if d.Strategy != nil {
+			d.Strategy.Register(protected)
 		}
 		if d.WSHub != nil {
 			protected.GET("/ws", d.WSHub.HandleWS)

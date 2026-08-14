@@ -110,6 +110,7 @@ func Build(ctx context.Context) (*App, error) {
 		Kline:  cascade,
 		Agent:  transport.NewAgentHandler(agentSvc, userDB),
 		Import: transport.NewImportHandler(agentSvc, logger),
+		Strategy: transport.NewStrategyHandler(userDB, cascade, cascade),
 		WSHub:  wsHub,
 		Static: static,
 	})
