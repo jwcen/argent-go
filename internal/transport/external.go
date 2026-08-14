@@ -66,26 +66,22 @@ func (h *ExternalHandler) ListAssets(c *gin.Context) {
 	WriteJSON(c, http.StatusOK, assets)
 }
 
-type createAssetReq struct {
-	AssetType string `json:"asset_type" binding:"required"`
-	Code      string `json:"code" binding:"required"`
-	Name      string `json:"name" binding:"required"`
-	Platform  string `json:"platform"`
-}
-
 func (h *ExternalHandler) CreateAsset(c *gin.Context) {
 	svc, err := h.svc(c)
 	if err != nil {
 		WriteError(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	var req createAssetReq
-	if err := c.ShouldBindJSON(&req); err != nil {
+	var a external.Asset
+	if err := c.ShouldBindJSON(&a); err != nil {
 		WriteError(c, http.StatusBadRequest, "invalid request")
 		return
 	}
-	a := &external.Asset{AssetType: external.AssetType(req.AssetType), Code: req.Code, Name: req.Name, Platform: req.Platform}
-	id, err := svc.CreateAsset(c.Request.Context(), a)
+	if a.AssetType == "" || a.Code == "" || a.Name == "" {
+		WriteError(c, http.StatusBadRequest, "asset_type / code / name 为必填")
+		return
+	}
+	id, err := svc.CreateAsset(c.Request.Context(), &a)
 	if err != nil {
 		WriteError(c, http.StatusInternalServerError, err.Error())
 		return
