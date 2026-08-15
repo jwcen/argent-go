@@ -110,6 +110,20 @@ type DataSource interface {
 	KlineProvider
 }
 
+// StockSuggest 搜索建议一行（用于输入框自动补全）。
+type StockSuggest struct {
+	Code     string `json:"code"`      // 6 位股票代码
+	Name     string `json:"name"`      // 股票名称
+	Pinyin   string `json:"pinyin,omitempty"`  // 拼音首字母（可选）
+	Market   string `json:"market"`    // SH/SZ/BJ
+}
+
+// Searcher 股票代码/名称模糊搜索端口。
+// 用于「记一笔」弹窗的股票代码自动补全。
+type Searcher interface {
+	Search(ctx context.Context, keyword string, limit int) ([]StockSuggest, error)
+}
+
 // ---- 符号转换工具 ----
 
 // SinaSymbol 把 6 位股票码转成新浪格式（sh/sz/bj 前缀）。

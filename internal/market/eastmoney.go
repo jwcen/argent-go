@@ -447,34 +447,89 @@ var foreignSecids = []struct {
 	{"100.N225", "日经225"},
 }
 
-// ForeignIndices 海外/亚太主要指数实时涨跌。
-func (e *EastmoneySource) ForeignIndices(ctx context.Context) ([]ForeignIndex, error) {
-	out := make([]ForeignIndex, 0, len(foreignSecids))
-	var firstErr error
-	for _, fx := range foreignSecids {
-		r, err := e.stockGet(ctx, fx.secid, "f43,f57,f58,f170")
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
+// ── 搜索建议（自动补全）──
+
+// emSearchResp 东财搜索建议响应。
+type emSearchResp struct {
+	QuotationCodeTable *struct {
+		Data []struct {
+			Code    string `json:"Code"`    // 6 位代码
+			Name    string `json:"Name"`    // 名称
+			Pinyin  string `json:"PyShort"` // 拼音首字母
+			SecName string `json:"SecName"` // 完整名称（含后缀）
+		} `json:"Data"`
+	} `json:"QuotationCodeTable"`
+}
+
+// Search 股票代码/名称模糊搜索。
+// 用东财搜索建议 API：https://searchapi.eastmoney.com/api/suggest/get
+// type=14 表示 A 股股票，count 控制返回条数。
+func (e *EastmoneySource) Search(ctx context.Context, keyword string, limit int) ([]StockSuggest, error) {
+	if keyword == "" {
+		return []StockSuggest{}, nil
+	}
+	if limit <= 0 || limit > 20 {
+		limit = 10
+	}
+
+	u := fmt.Sprintf(
+		"https://searchapi.eastmoney.com/api/suggest/get?input=%s&type=14&token=D43BF722C8E33BDC906FB84D85E326E8&count=%d",
+		url.QueryEscape(keyword), limit,
+	)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Referer", "https://quote.eastmoney.com/")
+
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var r emSearchResp
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, err
+	}
+	if r.QuotationCodeTable == nil || r.QuotationCodeTable.Data == nil {
+		return []StockSuggest{}, nil
+	}
+
+	out := make([]StockSuggest, 0, len(r.QuotationCodeTable.Data))
+	for _, d := range r.QuotationCodeTable.Data {
+		code := d.Code
+		// 东财返回的 code 可能带前缀或非6位，只取纯数字部分
+		if len(code) >= 6 && isAllDigit(code[:6]) {
+			code = code[:6]
 		}
-		if r.Data == nil {
-			continue
+		market := "SZ"
+		if len(code) == 6 && (code[0] == '6' || code[0] == '9' || code[0] == '5') {
+			market = "SH"
 		}
-		name := r.Data.Name
-		if name == "" {
-			name = fx.name
+		if len(code) == 6 && (code[0] == '8' || code[0] == '4') {
+			market = "BJ"
 		}
-		out = append(out, ForeignIndex{
-			Code:      r.Data.Code,
-			Name:      name,
-			Price:     round2(r.Data.Price / 100),
-			ChangePct: round2(r.Data.Chg / 100),
+		out = append(out, StockSuggest{
+			Code:   code,
+			Name:   d.Name,
+			Pinyin: d.Pinyin,
+			Market: market,
 		})
 	}
-	if len(out) == 0 && firstErr != nil {
-		return nil, fmt.Errorf("eastmoney foreign indices: %w", firstErr)
-	}
 	return out, nil
+}
+
+func isAllDigit(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }

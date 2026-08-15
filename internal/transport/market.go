@@ -19,6 +19,7 @@ type MarketHandler struct {
 	kliner  market.KlineProvider
 	indices market.IndexProvider
 	funds   market.FundQuoter // 场外基金净值查询；nil 时 /funds 返回空
+	searcher market.Searcher  // 股票搜索；nil 时 /stock-search 返回空
 	logger  *slog.Logger
 }
 
@@ -32,6 +33,11 @@ func NewMarketHandler(q market.Quoter, k market.KlineProvider, idx market.IndexP
 // SetFundQuoter 注入场外基金净值查询源（可选；不注入则 /api/market/funds 返回空）。
 func (h *MarketHandler) SetFundQuoter(f market.FundQuoter) {
 	h.funds = f
+}
+
+// SetSearcher 注入股票搜索源（可选；不注入则 /api/market/stock-search 返回空）。
+func (h *MarketHandler) SetSearcher(s market.Searcher) {
+	h.searcher = s
 }
 
 func (h *MarketHandler) Register(r gin.IRouter) {
@@ -154,10 +160,30 @@ func (h *MarketHandler) TradingDay(c *gin.Context) {
 	})
 }
 
-// GET /api/market/stock-search?keyword=茅台 — 简化搜索
-// 完整搜索需要东财搜索 API，这里先返回空列表占位
+// GET /api/market/stock-search?keyword=茅台&limit=10 — 股票代码/名称模糊搜索
 func (h *MarketHandler) StockSearch(c *gin.Context) {
-	c.JSON(200, []any{})
+	if h.searcher == nil {
+		c.JSON(200, []any{})
+		return
+	}
+	keyword := c.Query("keyword")
+	if keyword == "" {
+		c.JSON(200, []any{})
+		return
+	}
+	limit := 10
+	if l := c.Query("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 20 {
+			limit = v
+		}
+	}
+	results, err := h.searcher.Search(c.Request.Context(), keyword, limit)
+	if err != nil {
+		h.logger.Warn("market stock-search failed, degrade to empty", "keyword", keyword, "err", err)
+		c.JSON(200, []any{})
+		return
+	}
+	c.JSON(200, results)
 }
 
 // splitCodes 拆分逗号分隔的股票码

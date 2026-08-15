@@ -83,6 +83,7 @@ func Build(ctx context.Context) (*App, error) {
 	// 基金净值查询走新浪 f_ 接口（A 股报价源无法复用）
 	mh := transport.NewMarketHandler(cascade, cascade, em, logger)
 	mh.SetFundQuoter(sina)
+	mh.SetSearcher(em) // 股票搜索（东财 suggest API）
 
 	// WebSocket hub
 	wsHub := ws.NewHub(cascade, logger)
