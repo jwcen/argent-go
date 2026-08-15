@@ -145,7 +145,7 @@ func (e *EastmoneySource) Quote(ctx context.Context, codes []string) (map[string
 		return map[string]*Quote{}, nil
 	}
 
-	url := fmt.Sprintf("https://push2.eastmoney.com/api/qt/ulist.np/get?fields=f1,f2,f3,f4,f5,f6,f12,f14&secids=%s",
+	url := fmt.Sprintf("https://push2.eastmoney.com/api/qt/ulist.np/get?fields=f1,f2,f3,f4,f5,f6,f12,f14,f60&secids=%s",
 		strings.Join(secids, ","))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -170,14 +170,15 @@ func (e *EastmoneySource) Quote(ctx context.Context, codes []string) (map[string
 type emQuoteResp struct {
 	Data *struct {
 		Diff []struct {
-			Code  int     `json:"f12"` // 代码
-			Name  string  `json:"f14"` // 名称
-			Price float64 `json:"f2"`  // 最新价
-			Chg   float64 `json:"f3"`  // 涨跌幅
-			High  float64 `json:"f4"`
-			Low   float64 `json:"f5"`
-			Open  float64 `json:"f46"`
-			Vol   float64 `json:"f5"`
+			Code      int     `json:"f12"` // 代码
+			Name      string  `json:"f14"` // 名称
+			Price     float64 `json:"f2"`  // 最新价
+			Chg       float64 `json:"f3"`  // 涨跌幅
+			High      float64 `json:"f4"`
+			Low       float64 `json:"f5"`
+			Open      float64 `json:"f46"`
+			Vol       float64 `json:"f5"`
+			PrevClose float64 `json:"f60"` // 昨收价
 		} `json:"diff"`
 	} `json:"data"`
 }
@@ -202,6 +203,7 @@ func parseEMQuote(body []byte) map[string]*Quote {
 			Low:       d.Low / 100,
 			ChangePct: d.Chg / 100,
 			Volume:    d.Vol,
+			PrevClose: d.PrevClose / 100,
 		}
 	}
 	return result
