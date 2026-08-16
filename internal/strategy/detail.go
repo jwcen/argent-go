@@ -21,6 +21,8 @@ type TechnicalDetail struct {
 	MA10     []float64  `json:"ma10"`
 	MA20     []float64  `json:"ma20"`
 	MA60     []float64  `json:"ma60"`
+	MA120    []float64  `json:"ma120"`
+	MA250    []float64  `json:"ma250"`
 	BollUp   []float64  `json:"boll_up"`
 	BollMid  []float64  `json:"boll_mid"`
 	BollLow  []float64  `json:"boll_low"`
@@ -80,6 +82,8 @@ func AnalyzeTechnical(code, name string, klines []market.KlineDay) (*TechnicalDe
 		MA10:      SMA(c, 10),
 		MA20:      SMA(c, 20),
 		MA60:      SMA(c, 60),
+		MA120:     SMA(c, 120),
+		MA250:     SMA(c, 250),
 		BollUp:    up,
 		BollMid:   mid,
 		BollLow:   low,
