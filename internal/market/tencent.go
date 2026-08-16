@@ -28,7 +28,11 @@ type tencentKlineResp struct {
 	} `json:"data"`
 }
 
-func (t *TencentSource) Kline(ctx context.Context, code string, days int) ([]KlineDay, error) {
+func (t *TencentSource) Kline(ctx context.Context, code string, period int, days int) ([]KlineDay, error) {
+	// 腾讯仅日K；周/月返回空。
+	if period != PeriodDaily && period != 0 {
+		return nil, nil
+	}
 	if !IsAShare(code) {
 		return nil, nil
 	}

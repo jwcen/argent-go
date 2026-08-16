@@ -132,7 +132,11 @@ func parseSinaResponse(text string) map[string]*Quote {
 }
 
 // SinaSource 也实现 KlineProvider（新浪不复权日K，ETF 拆分会断崖，仅作兜底）。
-func (s *SinaSource) Kline(ctx context.Context, code string, days int) ([]KlineDay, error) {
+func (s *SinaSource) Kline(ctx context.Context, code string, period int, days int) ([]KlineDay, error) {
+	// 新浪仅日K；周/月请求直接返回空。
+	if period != PeriodDaily && period != 0 {
+		return nil, nil
+	}
 	if !IsAShare(code) {
 		return nil, nil
 	}

@@ -67,7 +67,8 @@ type Report struct {
 
 // BacktestParams 回测请求参数。
 type BacktestParams struct {
-	Strategy string `json:"strategy"` // single_ma | ma_cross | consensus | bollinger | rsi | macd | breakout
+	Strategy string `json:"strategy"` // single_ma | ma_cross | consensus | bollinger | rsi | macd | breakout | grid
+	Period   int    `json:"period"`   // 0=日K(默认), 102=周K, 103=月K（仅数据源支持时生效）
 	MAN      int    `json:"ma_n"`
 	MAFast   int    `json:"ma_fast"`
 	MASlow   int    `json:"ma_slow"`

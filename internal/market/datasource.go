@@ -83,9 +83,19 @@ type Quoter interface {
 }
 
 // KlineProvider 日 K 线端口。
+//
+// period：0=日K(默认)，102=周K，103=月K（对应东财 klt 编码）。
+// 非日K只能从东财取，其它源直接返回错误。
 type KlineProvider interface {
-	Kline(ctx context.Context, code string, days int) ([]KlineDay, error)
+	Kline(ctx context.Context, code string, period int, days int) ([]KlineDay, error)
 }
+
+// K 线周期常量。0=日K 默认，102=周K，103=月K。
+const (
+	PeriodDaily   = 0
+	PeriodWeekly  = 102
+	PeriodMonthly = 103
+)
 
 // IndexProvider 大盘指数端口。
 type IndexProvider interface {

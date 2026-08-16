@@ -8,6 +8,8 @@ import (
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+
+	"github.com/jwcen/argent-go/internal/market"
 )
 
 // ─────────────────────────── resolve_stock ───────────────────────────
@@ -134,7 +136,7 @@ func (s *Service) toolGetTrend() (tool.InvokableTool, error) {
 		if days <= 0 {
 			days = 20
 		}
-		kl, err := s.kliner.Kline(ctx, code, days)
+		kl, err := s.kliner.Kline(ctx, code, market.PeriodDaily, days)
 		if err != nil {
 			return "", err
 		}

@@ -54,12 +54,22 @@ type emKlineResp struct {
 	} `json:"data"`
 }
 
-func (e *EastmoneySource) Kline(ctx context.Context, code string, days int) ([]KlineDay, error) {
+func (e *EastmoneySource) Kline(ctx context.Context, code string, period int, days int) ([]KlineDay, error) {
 	if !IsAShare(code) {
 		return nil, nil
 	}
 	if days <= 0 {
 		days = 60
+	}
+	// period: 0/101=日K, 102=周K, 103=月K
+	klt := 101
+	switch period {
+	case PeriodWeekly:
+		klt = 102
+	case PeriodMonthly:
+		klt = 103
+	default:
+		klt = 101
 	}
 
 	secid := EMSecid(code)
@@ -67,8 +77,8 @@ func (e *EastmoneySource) Kline(ctx context.Context, code string, days int) ([]K
 
 	var lastErr error
 	for _, host := range hosts {
-		url := fmt.Sprintf("https://%s/api/qt/stock/kline/get?secid=%s&fields1=f1&fields2=f51,f52,f53,f54,f55,f56,f57&klt=101&fqt=1&end=20500101&lmt=%d",
-			host, secid, days)
+		url := fmt.Sprintf("https://%s/api/qt/stock/kline/get?secid=%s&fields1=f1&fields2=f51,f52,f53,f54,f55,f56,f57&klt=%d&fqt=1&end=20500101&lmt=%d",
+			host, secid, klt, days)
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {

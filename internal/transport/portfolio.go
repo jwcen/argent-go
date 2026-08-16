@@ -726,7 +726,7 @@ func (h *PortfolioHandler) Curve(c *gin.Context) {
 // attachBenchmark 尝试叠加沪深300基准（归一 100）。网络不可达时静默跳过。
 func attachBenchmark(ctx context.Context, curve *portfolio.Curve, kline market.KlineProvider) {
 	const benchCode = "sh000300"
-	kl, err := kline.Kline(ctx, benchCode, len(curve.Dates)+10)
+	kl, err := kline.Kline(ctx, benchCode, market.PeriodDaily, len(curve.Dates)+10)
 	if err != nil || len(kl) < 2 {
 		return
 	}

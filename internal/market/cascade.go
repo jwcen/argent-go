@@ -36,16 +36,23 @@ func (c *Cascade) Quote(ctx context.Context, codes []string) (map[string]*Quote,
 	return c.fallback.Quote(ctx, codes)
 }
 
-// Kline 先试主源（东财前复权），失败降级到腾讯（也是前复权），最后新浪（不复权兜底）。
-func (c *Cascade) Kline(ctx context.Context, code string, days int) ([]KlineDay, error) {
-	kl, err := c.primary.Kline(ctx, code, days)
+// Kline 先试主源（东财前复权），失败降级到备源（仅日K 周/月K 不降级，腾讯/新浪无周月数据）。
+func (c *Cascade) Kline(ctx context.Context, code string, period int, days int) ([]KlineDay, error) {
+	kl, err := c.primary.Kline(ctx, code, period, days)
 	if err == nil && len(kl) > 0 {
 		return kl, nil
 	}
 	if err != nil {
 		c.logger.Debug("cascade: primary kline failed, trying fallback", "err", err, "code", code)
 	}
-	return c.fallback.Kline(ctx, code, days)
+	// 非日K：其它源不支持周/月，不降级直接报错。
+	if period != PeriodDaily && period != 0 {
+		if err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	return c.fallback.Kline(ctx, code, period, days)
 }
 
 // Indices 大盘主要指数：主源（东财）支持则优先，否则试备选源（若也实现了 IndexProvider）。

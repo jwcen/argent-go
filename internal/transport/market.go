@@ -155,7 +155,7 @@ func (h *MarketHandler) History(c *gin.Context) {
 			days = v
 		}
 	}
-	kl, err := h.kliner.Kline(c.Request.Context(), code, days)
+	kl, err := h.kliner.Kline(c.Request.Context(), code, market.PeriodDaily, days)
 	if err != nil {
 		h.logger.Warn("market history failed, degrade to empty", "err", err)
 		c.JSON(200, []any{})

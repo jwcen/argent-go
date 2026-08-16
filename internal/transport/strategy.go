@@ -133,15 +133,16 @@ func (h *StrategyHandler) One(c *gin.Context) {
 	WriteJSON(c, http.StatusOK, rep)
 }
 
-// GET /api/strategy/:code/detail — 技术面明细（K线 + 指标序列 + 支撑压力）。
+// GET /api/strategy/:code/detail?period=0|102|103 — 技术面明细（K线 + 指标序列 + 支撑压力）。
 func (h *StrategyHandler) Detail(c *gin.Context) {
 	code := c.Param("code")
 	if !market.IsAShare(code) {
 		WriteError(c, http.StatusBadRequest, "code 需为 6 位 A 股代码")
 		return
 	}
+	period := parsePeriod(c.Query("period"))
 	ctx := c.Request.Context()
-	klines, err := h.kline.Kline(ctx, code, 400)
+	klines, err := h.kline.Kline(ctx, code, period, 400)
 	if err != nil || len(klines) < 30 {
 		WriteError(c, http.StatusBadGateway, "无法获取历史 K 线（需要网络）")
 		return
@@ -176,8 +177,13 @@ func (h *StrategyHandler) Analysis(c *gin.Context) {
 		WriteError(c, http.StatusBadRequest, "code 需为 6 位 A 股代码")
 		return
 	}
+	var req struct {
+		Period int `json:"period"` // 0=日K, 102=周K, 103=月K
+	}
+	_ = c.ShouldBindJSON(&req) // body 可选
+	period := normalizePeriod(req.Period)
 	ctx := c.Request.Context()
-	klines, err := h.kline.Kline(ctx, code, 250)
+	klines, err := h.kline.Kline(ctx, code, period, 250)
 	if err != nil || len(klines) < 30 {
 		WriteError(c, http.StatusBadGateway, "无法获取历史 K 线（需要网络）")
 		return
@@ -351,6 +357,30 @@ func (h *StrategyHandler) resolveName(ctx context.Context, code string) string {
 	return code
 }
 
+// parsePeriod 把 query 字符串里的周期值解析为 int；未知/为空返回 0（日K）。
+func parsePeriod(s string) int {
+	switch s {
+	case "102", "weekly", "week", "W":
+		return market.PeriodWeekly
+	case "103", "monthly", "month", "M":
+		return market.PeriodMonthly
+	default:
+		return market.PeriodDaily
+	}
+}
+
+// normalizePeriod 把传进来的 period 收敛到合法值；非法/0/未传 -> 日K。
+func normalizePeriod(p int) int {
+	switch p {
+	case market.PeriodWeekly:
+		return market.PeriodWeekly
+	case market.PeriodMonthly:
+		return market.PeriodMonthly
+	default:
+		return market.PeriodDaily
+	}
+}
+
 // Backtest 对任意 A 股代码用指定均线策略做历史回测。
 func (h *StrategyHandler) Backtest(c *gin.Context) {
 	var req struct {
@@ -368,9 +398,20 @@ func (h *StrategyHandler) Backtest(c *gin.Context) {
 		return
 	}
 
+	period := normalizePeriod(req.Period)
+	// 周/月K线数量天然少：日K要 ≥60 根，周/月相应放宽阈值。
+	days := 1500
+	minBars := 60
+	if period == market.PeriodWeekly {
+		days = 520 // 约 10 年周线
+		minBars = 20
+	} else if period == market.PeriodMonthly {
+		days = 240 // 约 20 年月线
+		minBars = 12
+	}
 	ctx := c.Request.Context()
-	klines, err := h.kline.Kline(ctx, code, 1500)
-	if err != nil || len(klines) < 60 {
+	klines, err := h.kline.Kline(ctx, code, period, days)
+	if err != nil || len(klines) < minBars {
 		WriteError(c, http.StatusBadGateway, "无法获取该代码的历史 K 线（需要网络）")
 		return
 	}
@@ -406,9 +447,19 @@ func (h *StrategyHandler) SplitBacktest(c *gin.Context) {
 		WriteError(c, http.StatusBadRequest, "code 需为 6 位 A 股代码")
 		return
 	}
+	period := normalizePeriod(req.Period)
+	days := 1500
+	minBars := 120
+	if period == market.PeriodWeekly {
+		days = 520
+		minBars = 40
+	} else if period == market.PeriodMonthly {
+		days = 240
+		minBars = 24
+	}
 	ctx := c.Request.Context()
-	klines, err := h.kline.Kline(ctx, code, 1500)
-	if err != nil || len(klines) < 120 {
+	klines, err := h.kline.Kline(ctx, code, period, days)
+	if err != nil || len(klines) < minBars {
 		WriteError(c, http.StatusBadGateway, "无法获取该代码的历史 K 线（需要网络）")
 		return
 	}
@@ -427,7 +478,7 @@ func (h *StrategyHandler) SplitBacktest(c *gin.Context) {
 // buildReport 组装单只报告：拉 K 线算指标 + 从账本算决策复盘。
 // K 线不可用时返回 nil（调用方据此跳过或报错）。
 func (h *StrategyHandler) buildReport(ctx context.Context, svc *portfolio.Service, code, name string, cost float64, shares int64) *strategy.Report {
-	klines, err := h.kline.Kline(ctx, code, 400)
+	klines, err := h.kline.Kline(ctx, code, market.PeriodDaily, 400)
 	if err != nil || len(klines) < 2 {
 		return nil
 	}
