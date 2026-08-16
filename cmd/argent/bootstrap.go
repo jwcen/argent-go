@@ -79,11 +79,13 @@ func Build(ctx context.Context) (*App, error) {
 	em := market.NewEastmoneySource()
 	sina := market.NewSinaSource()
 	cascade := market.NewCascade(em, sina, logger)
+	emFundEst := market.NewEastmoneyFundEstimateSource()
 
 	// 基金净值查询走新浪 f_ 接口（A 股报价源无法复用）
 	mh := transport.NewMarketHandler(cascade, cascade, em, logger)
 	mh.SetFundQuoter(sina)
-	mh.SetSearcher(em) // 股票搜索（东财 suggest API）
+	mh.SetFundEstimator(emFundEst) // 基金盘中估值（东财 Fund_JJJZ_Data，全市场一次性 + 60s 缓存）
+	mh.SetSearcher(em)             // 股票搜索（东财 suggest API）
 
 	// WebSocket hub
 	wsHub := ws.NewHub(cascade, logger)

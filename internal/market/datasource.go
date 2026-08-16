@@ -125,6 +125,23 @@ type Searcher interface {
 	Search(ctx context.Context, keyword string, limit int) ([]StockSuggest, error)
 }
 
+// FundEstimate 场外基金盘中估值快照。
+// 数据源：东财 Fund_JJJZ_Data.aspx（盘中实时，非交易时段估值为 0）。
+type FundEstimate struct {
+	Code              string  `json:"code"`
+	Name              string  `json:"name"`
+	UnitNAV           float64 `json:"unit_nav"`            // 官方单位净值
+	DailyChangePct    float64 `json:"daily_change_pct"`    // 官方净值日增长率（%）
+	EstimateNAV       float64 `json:"estimate_nav"`        // 盘中估算净值，非交易时段为 0
+	EstimateChangePct float64 `json:"estimate_change_pct"` // 盘中估算增长率（%，已去掉 % 号）
+}
+
+// FundEstimator 场外基金盘中估值查询端口。
+// 用于自选页的「实时估值」展示。
+type FundEstimator interface {
+	EstimateFunds(ctx context.Context, codes []string) (map[string]*FundEstimate, error)
+}
+
 // ---- 符号转换工具 ----
 
 // SinaSymbol 把 6 位股票码转成新浪格式（sh/sz/bj 前缀）。

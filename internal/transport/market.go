@@ -15,12 +15,13 @@ import (
 // 行情是 best-effort 外部依赖：沙箱无外网或数据源抖动时，所有读接口都
 // 优雅降级为「空数据 + 200」，而不是 500（原则：sandbox 无源优雅降级）。
 type MarketHandler struct {
-	quoter  market.Quoter
-	kliner  market.KlineProvider
-	indices market.IndexProvider
-	funds   market.FundQuoter // 场外基金净值查询；nil 时 /funds 返回空
-	searcher market.Searcher  // 股票搜索；nil 时 /stock-search 返回空
-	logger  *slog.Logger
+	quoter   market.Quoter
+	kliner   market.KlineProvider
+	indices  market.IndexProvider
+	funds    market.FundQuoter      // 场外基金官方净值；nil 时 /funds 返回空
+	fundEst  market.FundEstimator   // 场外基金盘中估值；nil 时 /funds-estimate 返回空
+	searcher market.Searcher        // 股票搜索；nil 时 /stock-search 返回空
+	logger   *slog.Logger
 }
 
 func NewMarketHandler(q market.Quoter, k market.KlineProvider, idx market.IndexProvider, logger *slog.Logger) *MarketHandler {
@@ -35,6 +36,11 @@ func (h *MarketHandler) SetFundQuoter(f market.FundQuoter) {
 	h.funds = f
 }
 
+// SetFundEstimator 注入场外基金盘中估值查询源（可选；不注入则 /api/market/funds-estimate 返回空）。
+func (h *MarketHandler) SetFundEstimator(e market.FundEstimator) {
+	h.fundEst = e
+}
+
 // SetSearcher 注入股票搜索源（可选；不注入则 /api/market/stock-search 返回空）。
 func (h *MarketHandler) SetSearcher(s market.Searcher) {
 	h.searcher = s
@@ -45,6 +51,7 @@ func (h *MarketHandler) Register(r gin.IRouter) {
 	g.GET("/quote/:code", h.Quote)
 	g.GET("/quote", h.BatchQuote)
 	g.GET("/funds", h.Funds)
+	g.GET("/funds-estimate", h.FundsEstimate)
 	g.GET("/history/:code", h.History)
 	g.GET("/indices", h.Indices)
 	g.GET("/trading-day", h.TradingDay)
@@ -111,6 +118,30 @@ func (h *MarketHandler) Funds(c *gin.Context) {
 	list := make([]*market.FundQuote, 0, len(fqs))
 	for _, f := range fqs {
 		list = append(list, f)
+	}
+	c.JSON(200, list)
+}
+
+// GET /api/market/funds-estimate?codes=... — 场外基金盘中估值（盘内 gsz>0，盘外 gsz=0）
+func (h *MarketHandler) FundsEstimate(c *gin.Context) {
+	if h.fundEst == nil {
+		c.JSON(200, []any{})
+		return
+	}
+	codesStr := c.Query("codes")
+	if codesStr == "" {
+		c.JSON(400, gin.H{"detail": "codes param required"})
+		return
+	}
+	ests, err := h.fundEst.EstimateFunds(c.Request.Context(), splitCodes(codesStr))
+	if err != nil {
+		h.logger.Warn("market funds-estimate failed, degrade to empty", "err", err)
+		c.JSON(200, []any{})
+		return
+	}
+	list := make([]*market.FundEstimate, 0, len(ests))
+	for _, e := range ests {
+		list = append(list, e)
 	}
 	c.JSON(200, list)
 }
