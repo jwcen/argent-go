@@ -104,6 +104,9 @@ func Build(ctx context.Context) (*App, error) {
 	agentSvc.SetIndexProvider(cascade)     // 大盘指数（cascade 已实现 IndexProvider）
 	agentSvc.SetSectorProvider(cascade)    // 板块/市场宽度/海外指数（cascade 已实现 SectorProvider）
 
+	strategyHandler := transport.NewStrategyHandler(userDB, cascade, cascade)
+	strategyHandler.SetAnalyzer(agentSvc) // 结构化 AI 个股分析（/strategy/:code/analysis）
+
 	engine := transport.New(transport.Deps{
 		Logger: logger,
 		Auth:   authSvc,
@@ -113,7 +116,7 @@ func Build(ctx context.Context) (*App, error) {
 		Kline:  cascade,
 		Agent:  transport.NewAgentHandler(agentSvc, userDB),
 		Import: transport.NewImportHandler(agentSvc, logger),
-		Strategy: transport.NewStrategyHandler(userDB, cascade, cascade),
+		Strategy: strategyHandler,
 		WSHub:  wsHub,
 		Static: static,
 	})

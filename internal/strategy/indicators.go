@@ -62,6 +62,31 @@ func MACD(closes []float64) (dif, dea, hist []float64) {
 	return
 }
 
+// Bollinger 布林带：返回 upper / mid / lower 三条等长序列（默认 N=20、k=2）。
+// warmup 位置为 0（与 SMA 对齐）。
+func Bollinger(closes []float64, n int, k float64) (upper, mid, lower []float64) {
+	if n <= 0 {
+		n = 20
+	}
+	if k <= 0 {
+		k = 2.0
+	}
+	mid = SMA(closes, n)
+	upper = make([]float64, len(closes))
+	lower = make([]float64, len(closes))
+	for i := n - 1; i < len(closes); i++ {
+		var sumSq float64
+		for j := i - n + 1; j <= i; j++ {
+			d := closes[j] - mid[i]
+			sumSq += d * d
+		}
+		std := math.Sqrt(sumSq / float64(n))
+		upper[i] = mid[i] + k*std
+		lower[i] = mid[i] - k*std
+	}
+	return
+}
+
 // RSI 相对强弱指标（Wilder 平滑，标准 14）。warmup 位置为 0。
 func RSI(closes []float64, period int) []float64 {
 	out := make([]float64, len(closes))

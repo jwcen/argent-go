@@ -128,6 +128,16 @@ func (s *Service) Chat(ctx context.Context, messages []*schema.Message) (string,
 	return "", fmt.Errorf("agent: 没有可用模型")
 }
 
+// ChatText 用 system + user 两条消息做一次非流式问答。
+// 封装了 schema.Message 构造，避免调用方 import eino 框架类型。
+func (s *Service) ChatText(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
+	msgs := []*schema.Message{
+		{Role: schema.System, Content: systemPrompt},
+		{Role: schema.User, Content: userPrompt},
+	}
+	return s.Chat(ctx, msgs)
+}
+
 // ChatStream 流式问答（SSE）。
 // 主模型不可用时自动切换备用模型；返回一个 channel，逐块输出 LLM 的回复。
 func (s *Service) ChatStream(ctx context.Context, messages []*schema.Message) (<-chan string, error) {
