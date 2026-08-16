@@ -9,24 +9,29 @@ import (
 // TechnicalDetail 单只个股的技术面明细，供详情页 K 线图 + 指标卡片渲染。
 //
 // 与 Report（快照 + 中性信号 + 决策复盘）互补：Report 是「结论」，
-// 这里给「过程」——完整序列，让前端能画出均线、布林带、MACD 柱。
+// 这里给「过程」——完整序列，让前端能画出均线、布林带、MACD 柱、量能。
 type TechnicalDetail struct {
 	Code      string  `json:"code"`
 	Name      string  `json:"name"`
 	LastClose float64 `json:"last_close"`
 
 	// 序列（与 Klines 等长，对齐下标）
-	Klines  []KlineBar    `json:"klines"`
-	MA5     []float64     `json:"ma5"`
-	MA10    []float64     `json:"ma10"`
-	MA20    []float64     `json:"ma20"`
-	MA60    []float64     `json:"ma60"`
-	BollUp  []float64     `json:"boll_up"`
-	BollMid []float64     `json:"boll_mid"`
-	BollLow []float64     `json:"boll_low"`
-	MACDDif []float64     `json:"macd_dif"`
-	MACDDea []float64     `json:"macd_dea"`
-	MACDHist []float64    `json:"macd_hist"`
+	Klines   []KlineBar `json:"klines"`
+	MA5      []float64  `json:"ma5"`
+	MA10     []float64  `json:"ma10"`
+	MA20     []float64  `json:"ma20"`
+	MA60     []float64  `json:"ma60"`
+	BollUp   []float64  `json:"boll_up"`
+	BollMid  []float64  `json:"boll_mid"`
+	BollLow  []float64  `json:"boll_low"`
+	MACDDif  []float64  `json:"macd_dif"`
+	MACDDea  []float64  `json:"macd_dea"`
+	MACDHist []float64  `json:"macd_hist"`
+
+	// 量能：成交量均线 + 当日量比（现量 / 20 日均量）。
+	VolMA5   []float64 `json:"vol_ma5"`
+	VolMA10  []float64 `json:"vol_ma10"`
+	VolRatio float64  `json:"vol_ratio"` // 当日量 / 20 日均量；>1.5 放量、<0.7 缩量
 
 	// 支撑 / 压力位（近期高低点，中性参考）
 	Support     float64 `json:"support"`     // 近端支撑（20 日低点）
@@ -51,9 +56,20 @@ func AnalyzeTechnical(code, name string, klines []market.KlineDay) (*TechnicalDe
 		return nil, fmt.Errorf("k线数据不足（至少需 30 根）")
 	}
 	c := closesOf(klines)
+	vol := volumesOf(klines)
 
 	up, mid, low := Bollinger(c, 20, 2)
 	dif, dea, hist := MACD(c)
+	volMA5 := SMA(vol, 5)
+	volMA10 := SMA(vol, 10)
+	volMA20 := SMA(vol, 20)
+
+	// 当日量比 = 现量 / 20 日均量；>1.5 视为放量，<0.7 视为缩量。
+	var volRatio float64
+	last := len(vol) - 1
+	if last >= 0 && volMA20[last] > 0 {
+		volRatio = vol[last] / volMA20[last]
+	}
 
 	d := &TechnicalDetail{
 		Code:      code,
@@ -70,6 +86,9 @@ func AnalyzeTechnical(code, name string, klines []market.KlineDay) (*TechnicalDe
 		MACDDif:   dif,
 		MACDDea:   dea,
 		MACDHist:  hist,
+		VolMA5:    volMA5,
+		VolMA10:   volMA10,
+		VolRatio:  volRatio,
 	}
 	for i, k := range klines {
 		d.Klines[i] = KlineBar{Date: k.Date, Open: k.Open, High: k.High, Low: k.Low, Close: k.Close, Volume: k.Volume}

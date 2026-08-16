@@ -205,6 +205,12 @@ func (h *StrategyHandler) Analysis(c *gin.Context) {
 	if tech, e := strategy.AnalyzeTechnical(code, name, klines); e == nil {
 		sb.WriteString(fmt.Sprintf("支撑：%.2f / 远端 %.2f；压力：%.2f / 远端 %.2f\n",
 			tech.Support, tech.SupportFar, tech.Resistance, tech.ResistanceFar))
+		// 量价：当日量、量比（>1.5 放量、<0.7 缩量）、量均。
+		if len(klines) > 0 {
+			lastVol := klines[len(klines)-1].Volume
+			sb.WriteString(fmt.Sprintf("量能：当日 %.0f；量比 %.2f（/20日均量）；VOL_MA5 %.0f / VOL_MA10 %.0f\n",
+				lastVol, tech.VolRatio, tech.VolMA5[len(tech.VolMA5)-1], tech.VolMA10[len(tech.VolMA10)-1]))
+		}
 	}
 	if rep, e := strategy.Evaluate(code, name, klines, nil); e == nil {
 		sb.WriteString(fmt.Sprintf("MA20 %.2f / MA60 %.2f；MACD DIF %.3f / DEA %.3f；RSI %.1f；趋势：%s\n",
@@ -213,12 +219,12 @@ func (h *StrategyHandler) Analysis(c *gin.Context) {
 			rep.Indicators.RSI, rep.Trend))
 	}
 
-	systemPrompt := "你是一位专业的 A 股技术分析师。请基于给定的行情数据与指标输出结构化分析。" +
-		"必须只输出一个 JSON 对象（不要任何多余文字），字段如下，全部用中文：" +
-		`{"direction":"看多/看空/中性判断，并简述理由（趋势、资金、预期、基本面）",` +
-		`"advice":"交易建议：买入区间、止损位、目标位、仓位建议",` +
-		`"trigger":"执行触发条件：哪些条件成立时更适合买入或卖出",` +
-		`"risk":"风险提示：潜在风险、催化因素、质量验证"}`
+	systemPrompt := "你是一位专业的 A 股技术分析师。请基于给定的行情、量价与指标输出结构化分析。" +
+		"必须把**量价关系**作为核心依据：放量上涨/缩量回调/量价背离/放量突破等典型形态。必须只输出一个 JSON 对象（不要任何多余文字），字段如下，全部用中文：" +
+		`{"direction":"看多/看空/中性判断，并简述理由（必须包含量价结论：当前放量/缩量/背离/配合）",` +
+		`"advice":"交易建议：买入区间、止损位、目标位、仓位建议（仓位需参考量比：放量可加仓，缩量需谨慎）",` +
+		`"trigger":"执行触发条件：哪些条件成立时更适合买入或卖出（需明确量能条件，如放量突破/缩量企稳）",` +
+		`"risk":"风险提示：潜在风险、催化因素、质量验证（包括量价背离的风险）"}`
 	userPrompt := sb.String() + "请分析这只股票。"
 
 	answer, err := h.analyzer.ChatText(ctx, systemPrompt, userPrompt)
