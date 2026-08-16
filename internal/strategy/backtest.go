@@ -4,14 +4,16 @@ import "math"
 
 // Backtest 把「信号」与「收益」解耦，并**修正前视偏差**：
 //
-// signal[i] 表示「在第 i 日收盘时、依据截至当日的数据生成的仓位意愿」。
+// signal[i] 表示「在第 i 日收盘时、依据截至当日的数据生成的目标仓位（0~1）」。
 // 但现实中你只能用昨天的信号决定今天，所以：
 //   第 i 日实际持仓 = signal[i-1]（信号次日才执行）
 // 这正是初版回测算出 +19398% 荒谬收益的根因——当时直接用
 // 「当日收盘 vs 当日均线」决定「当日仓位」，等于用当天的涨跌决定当天是否持仓。
 //
-// costRate 为单边交易成本（每次调仓买卖都扣），A 股按 0.10% 计（佣金+印花税+滑点）。
-func Backtest(closes []float64, signal []int, costRate float64) *BacktestResult {
+// 仓位是 0~1 的分数（0=空仓，1=满仓）：0/1 型策略（均线/RSI/MACD/突破）填 0 或 1；
+// 网格类策略填连续分数。costRate 为单边交易成本，按仓位变动量 |Δpos| 折算
+// （换手越多扣得越多），A 股按 0.10% 计（佣金+印花税+滑点）。
+func Backtest(closes []float64, signal []float64, costRate float64) *BacktestResult {
 	n := len(closes)
 	res := &BacktestResult{
 		EquityTiming: make([]float64, n),
@@ -21,22 +23,22 @@ func Backtest(closes []float64, signal []int, costRate float64) *BacktestResult 
 		return res
 	}
 	// 次日执行：pos[i] = signal[i-1]，首日为 0（无信号）。
-	pos := make([]int, n)
+	pos := make([]float64, n)
 	for i := 1; i < n; i++ {
-		pos[i] = signal[i-1]
+		pos[i] = clamp01(signal[i-1])
 	}
 
 	eqT, eqH := 1.0, 1.0
 	res.EquityTiming[0], res.EquityHold[0] = 1, 1
-	prev := 0
-	inMarket := 0
+	prev := 0.0
+	var inMarket float64
 
 	for i := 1; i < n; i++ {
 		r := closes[i]/closes[i-1] - 1
-		eqT *= (1 + float64(pos[i])*r)
+		eqT *= (1 + pos[i]*r)
 		eqH *= (1 + r)
 		if pos[i] != prev {
-			eqT *= (1 - costRate) // 调仓（买入或卖出）扣成本
+			eqT *= (1 - costRate*math.Abs(pos[i]-prev)) // 按换手量扣成本
 		}
 		prev = pos[i]
 		inMarket += pos[i]
@@ -47,7 +49,7 @@ func Backtest(closes []float64, signal []int, costRate float64) *BacktestResult 
 	res.TotalReturn = eqT - 1
 	res.HoldReturn = eqH - 1
 	res.Excess = res.TotalReturn - res.HoldReturn
-	res.TimeInMarket = float64(inMarket) / float64(n)
+	res.TimeInMarket = inMarket / float64(n)
 
 	// 最大回撤（基于择时净值曲线）
 	peak, maxDD := res.EquityTiming[0], 0.0
@@ -62,13 +64,14 @@ func Backtest(closes []float64, signal []int, costRate float64) *BacktestResult 
 	}
 	res.MaxDD = maxDD
 
-	// 交易明细：把持仓区间按连续 1 切分，每段算一次开仓→平仓收益。
+	// 交易明细：把「在场」区间（pos > ε）按连续段切分，每段算一次开仓→平仓收益。
 	trades, wins := 0, 0
 	i := 0
+	const eps = 1e-6
 	for i < n {
-		if pos[i] == 1 {
+		if pos[i] > eps {
 			start := i
-			for i < n && pos[i] == 1 {
+			for i < n && pos[i] > eps {
 				i++
 			}
 			end := i - 1
@@ -131,6 +134,16 @@ func Backtest(closes []float64, signal []int, costRate float64) *BacktestResult 
 	}
 
 	return res
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 // BacktestResult 回测输出。

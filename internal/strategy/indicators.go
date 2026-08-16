@@ -360,3 +360,40 @@ func PosBreakout(closes, volumes []float64, n int, volMult float64) []int {
 	}
 	return pos
 }
+
+// PosGrid 滚动网格：用过去 N 日的高低点作网格区间，价格越贴近下沿仓位越高、
+// 越贴近上沿仓位越低（底部满仓、顶部空仓），并离散到 levels 档。
+// 返回 0~1 的目标仓位分数（区别于上面 0/1 型信号）。默认 N=60、levels=5。
+func PosGrid(highs, lows, closes []float64, n, levels int) []float64 {
+	if n <= 0 {
+		n = 60
+	}
+	if levels < 2 {
+		levels = 2
+	}
+	pos := make([]float64, len(closes))
+	for i := n - 1; i < len(closes); i++ {
+		lo, hi := lows[i-n+1], highs[i-n+1]
+		for j := i - n + 1; j <= i; j++ {
+			if lows[j] < lo {
+				lo = lows[j]
+			}
+			if highs[j] > hi {
+				hi = highs[j]
+			}
+		}
+		var target float64
+		if hi > lo {
+			// t=0 贴下沿（该满仓），t=1 贴上沿（该空仓）
+			t := (closes[i] - lo) / (hi - lo)
+			target = 1 - t
+		} else {
+			target = 0.5
+		}
+		target = clamp01(target)
+		// 离散成 levels 档（0, 1/(levels-1), ..., 1）
+		target = math.Round(target*float64(levels-1)) / float64(levels-1)
+		pos[i] = target
+	}
+	return pos
+}

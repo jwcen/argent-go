@@ -81,6 +81,9 @@ type BacktestParams struct {
 	// 放量突破
 	BreakN   int     `json:"break_n"`
 	BreakVol float64 `json:"break_vol"`
+	// 滚动网格
+	GridN      int `json:"grid_n"`
+	GridLevels int `json:"grid_levels"`
 }
 
 // BacktestReport 回测结果（含净值曲线，已抽稀）。
@@ -130,6 +133,15 @@ func volumesOf(k []market.KlineDay) []float64 {
 	out := make([]float64, len(k))
 	for i, x := range k {
 		out[i] = x.Volume
+	}
+	return out
+}
+
+// intToFloat 把 0/1 型信号转成 0/1 分数仓位，统一喂给 Backtest 的 []float64 入参。
+func intToFloat(sig []int) []float64 {
+	out := make([]float64, len(sig))
+	for i, v := range sig {
+		out[i] = float64(v)
 	}
 	return out
 }
@@ -217,7 +229,7 @@ func RunBacktest(code, name string, klines []market.KlineDay, p BacktestParams) 
 	hi := highsOf(klines)
 	lo := lowsOf(klines)
 
-	var signal []int
+	var signal []float64
 	switch p.Strategy {
 	case "ma_cross":
 		fast, slow := p.MAFast, p.MASlow
@@ -227,23 +239,25 @@ func RunBacktest(code, name string, klines []market.KlineDay, p BacktestParams) 
 		if slow <= 0 {
 			slow = 60
 		}
-		signal = PosCross(c, fast, slow)
+		signal = intToFloat(PosCross(c, fast, slow))
 	case "consensus":
-		signal = PosConsensus(hi, lo, c)
+		signal = intToFloat(PosConsensus(hi, lo, c))
 	case "bollinger":
-		signal = PosBollingerMeanReversion(c, p.BollN, p.BollK)
+		signal = intToFloat(PosBollingerMeanReversion(c, p.BollN, p.BollK))
 	case "rsi":
-		signal = PosRSI(c, p.RSIPeriod, p.RSIOversold, p.RSIOverbought)
+		signal = intToFloat(PosRSI(c, p.RSIPeriod, p.RSIOversold, p.RSIOverbought))
 	case "macd":
-		signal = PosMACD(c)
+		signal = intToFloat(PosMACD(c))
 	case "breakout":
-		signal = PosBreakout(c, volumesOf(klines), p.BreakN, p.BreakVol)
+		signal = intToFloat(PosBreakout(c, volumesOf(klines), p.BreakN, p.BreakVol))
+	case "grid":
+		signal = PosGrid(hi, lo, c, p.GridN, p.GridLevels)
 	default: // single_ma
 		n := p.MAN
 		if n <= 0 {
 			n = 60
 		}
-		signal = PosSingleMA(c, n)
+		signal = intToFloat(PosSingleMA(c, n))
 	}
 
 	res := Backtest(c, signal, costPerSwitch)
@@ -256,6 +270,7 @@ func RunBacktest(code, name string, klines []market.KlineDay, p BacktestParams) 
 		"rsi":       "RSI 择时",
 		"macd":      "MACD 金叉死叉",
 		"breakout":  "放量突破",
+		"grid":      "滚动网格",
 	}[p.Strategy]
 	if strategyName == "" {
 		strategyName = "单均线择时"
@@ -278,6 +293,41 @@ func RunBacktest(code, name string, klines []market.KlineDay, p BacktestParams) 
 		CurveHold:    downsample(res.EquityHold, 160),
 		TradesDetail: res.TradesDetail,
 		Note:         fmt.Sprintf("单边交易成本假设 %.2f%%（含佣金、印花税、滑点）；信号次日执行，已修正前视偏差。", costPerSwitch*100),
+	}, nil
+}
+
+// SplitReport 分段回测：样本内（train，前半段）vs 样本外（test，后半段）。
+// 用于暴露「策略是否过拟合历史」：样本内很强、样本外崩掉 = 过拟合嫌疑。
+type SplitReport struct {
+	Code     string          `json:"code"`
+	Name     string          `json:"name"`
+	Strategy string          `json:"strategy"`
+	Train    *BacktestReport `json:"train"` // 样本内
+	Test     *BacktestReport `json:"test"`  // 样本外
+	Note     string          `json:"note"`
+}
+
+// RunBacktestSplit 把历史 K 线对半切，分别跑同一策略，做样本内外对比。
+func RunBacktestSplit(code, name string, klines []market.KlineDay, p BacktestParams) (*SplitReport, error) {
+	if len(klines) < 120 {
+		return nil, fmt.Errorf("k线数据不足（至少需 120 根），无法分段回测")
+	}
+	half := len(klines) / 2
+	train, err := RunBacktest(code, name, klines[:half], p)
+	if err != nil {
+		return nil, err
+	}
+	test, err := RunBacktest(code, name, klines[half:], p)
+	if err != nil {
+		return nil, err
+	}
+	return &SplitReport{
+		Code:     code,
+		Name:     name,
+		Strategy: train.Strategy,
+		Train:    train,
+		Test:     test,
+		Note:     "前半段为样本内、后半段为样本外。若样本内超额很高而样本外转负，说明策略可能过拟合历史。",
 	}, nil
 }
 

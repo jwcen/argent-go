@@ -19,7 +19,7 @@ import (
 // day1 持仓为 0，eqT[1]=1 —— 与预期 2 不符，测试会失败。
 func TestBacktest_NoLookAhead(t *testing.T) {
 	closes := []float64{1, 2, 2, 2, 2}
-	signal := []int{1, 0, 1, 0, 1}
+	signal := []float64{1, 0, 1, 0, 1}
 
 	res := Backtest(closes, signal, 0)
 
@@ -47,7 +47,7 @@ func TestBacktest_CostDrains(t *testing.T) {
 	for i := range closes {
 		closes[i] = 100 * (1 + 0.01*math.Sin(float64(i)/3.0))
 	}
-	signal := make([]int, len(closes))
+	signal := make([]float64, len(closes))
 	for i := range signal {
 		if i%2 == 0 {
 			signal[i] = 1
@@ -66,7 +66,7 @@ func TestBacktest_CostDrains(t *testing.T) {
 // TestBacktest_BuyHoldBeatsFlat 长期净值为正的标的，一直持有应不亏（基准 sanity）。
 func TestBacktest_BuyHoldSanity(t *testing.T) {
 	closes := []float64{100, 110, 121, 133, 146, 161} // +10%/天
-	signal := make([]int, len(closes))                // 永不入场
+	signal := make([]float64, len(closes))                // 永不入场
 	res := Backtest(closes, signal, 0)
 	if math.Abs(res.HoldReturn-(161.0/100.0-1)) > 1e-9 {
 		t.Fatalf("HoldReturn = %v, want %v", res.HoldReturn, 161.0/100.0-1)
@@ -142,7 +142,7 @@ func TestBacktest_AnnualizedAndSharpe(t *testing.T) {
 			closes[i] = closes[i-1] * (1 + delta)
 		}
 	}
-	signal := make([]int, len(closes))
+	signal := make([]float64, len(closes))
 	for i := range signal {
 		signal[i] = 1 // 一直持仓
 	}

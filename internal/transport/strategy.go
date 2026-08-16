@@ -45,10 +45,12 @@ func (h *StrategyHandler) SetAnalyzer(a *agent.Service) {
 func (h *StrategyHandler) Register(r gin.IRouter) {
 	g := r.Group("/strategy")
 	g.GET("", h.List)              // 所有 A 股持仓的策略报告（策略栏数据源）
+	g.GET("/analyses", h.ListAnalyses)   // AI 分析历史 + 后验复盘（可选 ?code=）
 	g.GET("/:code", h.One)         // 单只报告（可选账本复盘）
 	g.GET("/:code/detail", h.Detail)     // 单只技术面明细（K线+指标序列+支撑压力）
 	g.POST("/:code/analysis", h.Analysis) // 结构化 AI 分析（方向/建议/触发/风险）
 	g.POST("/backtest", h.Backtest) // 对任意代码做策略回测
+	g.POST("/backtest/split", h.SplitBacktest) // 分段回测（样本内外对比）
 }
 
 func (h *StrategyHandler) svc(c *gin.Context) (*portfolio.Service, error) {
@@ -219,7 +221,100 @@ func (h *StrategyHandler) Analysis(c *gin.Context) {
 		return
 	}
 	resp := parseAnalysis(code, name, answer)
+
+	// 持久化分析历史，供后验复盘（价格用分析时刻的现价）。
+	if resp.Direction != "" || resp.Advice != "" || resp.Raw != "" {
+		if store, e := h.analysisStore(c); e == nil {
+			_, _ = store.SaveAnalysis(ctx, &strategy.Analysis{
+				Code:      code,
+				Name:      name,
+				Direction: resp.Direction,
+				Advice:    resp.Advice,
+				Trigger:   resp.Trigger,
+				Risk:      resp.Risk,
+				PriceAt:   price,
+			})
+		}
+	}
 	WriteJSON(c, http.StatusOK, resp)
+}
+
+// analysisStore 按当前请求用户构造一次性分析存储。
+func (h *StrategyHandler) analysisStore(c *gin.Context) (strategy.AnalysisStore, error) {
+	uid := auth.MustUserID(c.Request.Context())
+	if uid == 0 {
+		return nil, errors.New("no user in context")
+	}
+	db, err := h.dbFn(uid)
+	if err != nil {
+		return nil, err
+	}
+	return sqlite.NewAnalysisRepo(db), nil
+}
+
+// GET /api/strategy/analyses?code=xxx — 分析历史 + 后验复盘（可选 code 过滤）。
+func (h *StrategyHandler) ListAnalyses(c *gin.Context) {
+	store, err := h.analysisStore(c)
+	if err != nil {
+		WriteError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ctx := c.Request.Context()
+	code := c.Query("code")
+	items, err := store.ListAnalyses(ctx, code)
+	if err != nil {
+		WriteError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// 后验：给每条补上现价、区间涨跌、方向对不对。
+	type out struct {
+		strategy.Analysis
+		LastPrice float64 `json:"last_price"`
+		PnlPct    float64 `json:"pnl_pct"`
+		Verdict   string  `json:"verdict"` // correct / wrong / neutral
+	}
+	list := make([]out, 0, len(items))
+	for _, a := range items {
+		o := out{Analysis: a, LastPrice: a.PriceAt, Verdict: "neutral"}
+		if a.PriceAt > 0 && h.quoter != nil {
+			if q, e := h.quoter.Quote(ctx, []string{a.Code}); e == nil && q != nil {
+				if x, ok := q[a.Code]; ok && x.Price > 0 {
+					o.LastPrice = x.Price
+					o.PnlPct = (x.Price - a.PriceAt) / a.PriceAt
+					o.Verdict = verdictOf(a.Direction, o.PnlPct)
+				}
+			}
+		}
+		list = append(list, o)
+	}
+	WriteJSON(c, http.StatusOK, gin.H{"items": list})
+}
+
+// verdictOf 根据方向判断 + 事后涨跌给出「对/错/中性」。
+func verdictOf(direction string, pnlPct float64) string {
+	d := strings.ToLower(direction)
+	bul := strings.Contains(d, "看多")
+	ber := strings.Contains(d, "看空")
+	if bul == ber {
+		return "neutral"
+	}
+	if bul {
+		if pnlPct > 0.001 {
+			return "correct"
+		}
+		if pnlPct < -0.001 {
+			return "wrong"
+		}
+	}
+	if ber {
+		if pnlPct < -0.001 {
+			return "correct"
+		}
+		if pnlPct > 0.001 {
+			return "wrong"
+		}
+	}
+	return "neutral"
 }
 
 // parseAnalysis 把模型输出解析成四段式；解析失败时把原文塞进 Raw 兜底。
@@ -288,6 +383,40 @@ func (h *StrategyHandler) Backtest(c *gin.Context) {
 		}
 	}
 	rep, err := strategy.RunBacktest(code, name, klines, req.BacktestParams)
+	if err != nil {
+		WriteError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	WriteJSON(c, http.StatusOK, rep)
+}
+
+// POST /api/strategy/backtest/split — 分段回测（样本内 vs 样本外）。
+func (h *StrategyHandler) SplitBacktest(c *gin.Context) {
+	var req struct {
+		strategy.BacktestParams
+		Code string `json:"code"`
+		Name string `json:"name"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		WriteError(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	code := req.Code
+	if !market.IsAShare(code) {
+		WriteError(c, http.StatusBadRequest, "code 需为 6 位 A 股代码")
+		return
+	}
+	ctx := c.Request.Context()
+	klines, err := h.kline.Kline(ctx, code, 1500)
+	if err != nil || len(klines) < 120 {
+		WriteError(c, http.StatusBadGateway, "无法获取该代码的历史 K 线（需要网络）")
+		return
+	}
+	name := req.Name
+	if name == "" {
+		name = h.resolveName(ctx, code)
+	}
+	rep, err := strategy.RunBacktestSplit(code, name, klines, req.BacktestParams)
 	if err != nil {
 		WriteError(c, http.StatusInternalServerError, err.Error())
 		return
