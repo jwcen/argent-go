@@ -455,10 +455,12 @@ var foreignSecids = []struct {
 type emSearchResp struct {
 	QuotationCodeTable *struct {
 		Data []struct {
-			Code    string `json:"Code"`    // 6 位代码
-			Name    string `json:"Name"`    // 名称
-			Pinyin  string `json:"PyShort"` // 拼音首字母
-			SecName string `json:"SecName"` // 完整名称（含后缀）
+			Code             string `json:"Code"`             // 6 位代码
+			Name             string `json:"Name"`             // 名称
+			Pinyin           string `json:"PyShort"`          // 拼音首字母
+			SecName          string `json:"SecName"`          // 完整名称（含后缀）
+			Classify         string `json:"Classify"`         // AStock / OTCFUND / ...
+			SecurityTypeName string `json:"SecurityTypeName"` // 深A/沪A/开放式基金...
 		} `json:"Data"`
 	} `json:"QuotationCodeTable"`
 }
@@ -510,18 +512,28 @@ func (e *EastmoneySource) Search(ctx context.Context, keyword string, limit int)
 		if len(code) >= 6 && isAllDigit(code[:6]) {
 			code = code[:6]
 		}
-		market := "SZ"
-		if len(code) == 6 && (code[0] == '6' || code[0] == '9' || code[0] == '5') {
-			market = "SH"
+		// 基金（开放式基金）与股票区分：Classify 为 OTCFUND 或类型名含「基金」。
+		isFund := d.Classify == "OTCFUND" || strings.Contains(d.SecurityTypeName, "基金")
+		market := ""
+		if !isFund {
+			market = "SZ"
+			if len(code) == 6 && (code[0] == '6' || code[0] == '9' || code[0] == '5') {
+				market = "SH"
+			}
+			if len(code) == 6 && (code[0] == '8' || code[0] == '4') {
+				market = "BJ"
+			}
 		}
-		if len(code) == 6 && (code[0] == '8' || code[0] == '4') {
-			market = "BJ"
+		typ := "STOCK"
+		if isFund {
+			typ = "FUND"
 		}
 		out = append(out, StockSuggest{
 			Code:   code,
 			Name:   d.Name,
 			Pinyin: d.Pinyin,
 			Market: market,
+			Type:   typ,
 		})
 	}
 	return out, nil

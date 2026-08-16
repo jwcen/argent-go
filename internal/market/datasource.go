@@ -112,10 +112,11 @@ type DataSource interface {
 
 // StockSuggest 搜索建议一行（用于输入框自动补全）。
 type StockSuggest struct {
-	Code     string `json:"code"`      // 6 位股票代码
-	Name     string `json:"name"`      // 股票名称
-	Pinyin   string `json:"pinyin,omitempty"`  // 拼音首字母（可选）
-	Market   string `json:"market"`    // SH/SZ/BJ
+	Code   string `json:"code"`             // 6 位代码
+	Name   string `json:"name"`             // 名称
+	Pinyin string `json:"pinyin,omitempty"` // 拼音首字母（可选）
+	Market string `json:"market"`           // SH/SZ/BJ；基金为空
+	Type   string `json:"type"`             // STOCK / FUND
 }
 
 // Searcher 股票代码/名称模糊搜索端口。

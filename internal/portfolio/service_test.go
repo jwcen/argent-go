@@ -177,11 +177,11 @@ func (f *fakeRepo) ListWatchlist(ctx context.Context) ([]WatchlistItem, error) {
 }
 
 func (f *fakeRepo) AddWatchlist(ctx context.Context, w *WatchlistItem) error {
-	f.watch[w.StockCode] = w
+	f.watch[w.Code] = w
 	return nil
 }
 
-func (f *fakeRepo) RemoveWatchlist(ctx context.Context, code string) error {
+func (f *fakeRepo) RemoveWatchlist(ctx context.Context, itemType, code string) error {
 	delete(f.watch, code)
 	return nil
 }

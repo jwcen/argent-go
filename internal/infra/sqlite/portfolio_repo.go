@@ -288,7 +288,7 @@ func (r *PortfolioRepo) DeleteThesis(ctx context.Context, code string) error {
 
 func (r *PortfolioRepo) ListWatchlist(ctx context.Context) ([]portfolio.WatchlistItem, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT stock_code, stock_name, added_at, added_price FROM watchlist ORDER BY added_at DESC`)
+		`SELECT item_type, code, name, added_at, added_price FROM watchlist ORDER BY added_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list watchlist: %w", err)
 	}
@@ -300,10 +300,10 @@ func (r *PortfolioRepo) ListWatchlist(ctx context.Context) ([]portfolio.Watchlis
 		var name sql.NullString
 		var addedAt sql.NullString
 		var addedPrice sql.NullFloat64
-		if err := rows.Scan(&w.StockCode, &name, &addedAt, &addedPrice); err != nil {
+		if err := rows.Scan(&w.ItemType, &w.Code, &name, &addedAt, &addedPrice); err != nil {
 			return nil, err
 		}
-		w.StockName = name.String
+		w.Name = name.String
 		w.AddedAt = addedAt.String
 		if addedPrice.Valid {
 			v := addedPrice.Float64
@@ -316,18 +316,18 @@ func (r *PortfolioRepo) ListWatchlist(ctx context.Context) ([]portfolio.Watchlis
 
 func (r *PortfolioRepo) AddWatchlist(ctx context.Context, w *portfolio.WatchlistItem) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO watchlist (stock_code, stock_name, added_at, added_price)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(stock_code) DO UPDATE SET stock_name = excluded.stock_name`,
-		w.StockCode, w.StockName, w.AddedAt, w.AddedPrice)
+		`INSERT INTO watchlist (item_type, code, name, added_at, added_price)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(item_type, code) DO UPDATE SET name = excluded.name`,
+		w.ItemType, w.Code, w.Name, w.AddedAt, w.AddedPrice)
 	if err != nil {
 		return fmt.Errorf("sqlite: add watchlist: %w", err)
 	}
 	return nil
 }
 
-func (r *PortfolioRepo) RemoveWatchlist(ctx context.Context, code string) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM watchlist WHERE stock_code = ?`, code)
+func (r *PortfolioRepo) RemoveWatchlist(ctx context.Context, itemType, code string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM watchlist WHERE item_type = ? AND code = ?`, itemType, code)
 	if err != nil {
 		return fmt.Errorf("sqlite: remove watchlist: %w", err)
 	}

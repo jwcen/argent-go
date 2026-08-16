@@ -54,7 +54,7 @@ func (h *PortfolioHandler) Register(r gin.IRouter) {
 	wl := r.Group("/watchlist")
 	wl.GET("", h.ListWatchlist)
 	wl.POST("", h.AddWatchlist)
-	wl.DELETE("/:code", h.RemoveWatchlist)
+	wl.DELETE("/:type/:code", h.RemoveWatchlist)
 
 	b := r.Group("/brokers")
 	b.GET("", h.ListBrokers)
@@ -347,8 +347,9 @@ func (h *PortfolioHandler) ListWatchlist(c *gin.Context) {
 }
 
 type addWatchlistReq struct {
-	StockCode  string   `json:"stock_code" binding:"required"`
-	StockName  string   `json:"stock_name"`
+	ItemType   string   `json:"item_type"` // STOCK / FUND；空则默认 STOCK
+	Code       string   `json:"code" binding:"required"`
+	Name       string   `json:"name"`
 	AddedPrice *float64 `json:"added_price"`
 }
 
@@ -360,12 +361,13 @@ func (h *PortfolioHandler) AddWatchlist(c *gin.Context) {
 	}
 	var req addWatchlistReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		WriteError(c, http.StatusBadRequest, "stock_code is required")
+		WriteError(c, http.StatusBadRequest, "code is required")
 		return
 	}
 	w := &portfolio.WatchlistItem{
-		StockCode:  req.StockCode,
-		StockName:  req.StockName,
+		ItemType:   req.ItemType,
+		Code:       req.Code,
+		Name:       req.Name,
 		AddedPrice: req.AddedPrice,
 	}
 	if err := svc.AddWatchlist(c.Request.Context(), w); err != nil {
@@ -381,8 +383,9 @@ func (h *PortfolioHandler) RemoveWatchlist(c *gin.Context) {
 		WriteError(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	itemType := c.Param("type")
 	code := c.Param("code")
-	if err := svc.RemoveWatchlist(c.Request.Context(), code); err != nil {
+	if err := svc.RemoveWatchlist(c.Request.Context(), itemType, code); err != nil {
 		writePortfolioError(c, err)
 		return
 	}

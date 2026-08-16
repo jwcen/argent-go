@@ -104,10 +104,11 @@ type Thesis struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
-// WatchlistItem 是自选股。
+// WatchlistItem 是自选池里的一条（股票或基金）。
 type WatchlistItem struct {
-	StockCode  string   `json:"stock_code"`
-	StockName  string   `json:"stock_name"`
+	ItemType   string   `json:"item_type"` // STOCK / FUND
+	Code       string   `json:"code"`
+	Name       string   `json:"name"`
 	AddedAt    string   `json:"added_at"`
 	AddedPrice *float64 `json:"added_price,omitempty"`
 }
@@ -179,7 +180,7 @@ type Repository interface {
 
 	ListWatchlist(ctx context.Context) ([]WatchlistItem, error)
 	AddWatchlist(ctx context.Context, w *WatchlistItem) error
-	RemoveWatchlist(ctx context.Context, code string) error
+	RemoveWatchlist(ctx context.Context, itemType, code string) error
 
 	ListDividendEvents(ctx context.Context, code string) ([]DividendEvent, error)
 	ListAllDividendEvents(ctx context.Context) ([]DividendEvent, error)

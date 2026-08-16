@@ -369,8 +369,11 @@ func (s *Service) ListWatchlist(ctx context.Context) ([]WatchlistItem, error) {
 }
 
 func (s *Service) AddWatchlist(ctx context.Context, w *WatchlistItem) error {
-	if w.StockCode == "" {
+	if w.Code == "" {
 		return ErrInvalidCode
+	}
+	if w.ItemType == "" {
+		w.ItemType = "STOCK"
 	}
 	if w.AddedAt == "" {
 		w.AddedAt = s.now().Format("2006-01-02")
@@ -378,8 +381,8 @@ func (s *Service) AddWatchlist(ctx context.Context, w *WatchlistItem) error {
 	return s.repo.AddWatchlist(ctx, w)
 }
 
-func (s *Service) RemoveWatchlist(ctx context.Context, code string) error {
-	return s.repo.RemoveWatchlist(ctx, code)
+func (s *Service) RemoveWatchlist(ctx context.Context, itemType, code string) error {
+	return s.repo.RemoveWatchlist(ctx, itemType, code)
 }
 
 // ---- internal ----
