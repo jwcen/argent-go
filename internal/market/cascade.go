@@ -36,7 +36,7 @@ func (c *Cascade) Quote(ctx context.Context, codes []string) (map[string]*Quote,
 	return c.fallback.Quote(ctx, codes)
 }
 
-// Kline 先试主源（东财前复权），失败降级到备源（仅日K 周/月K 不降级，腾讯/新浪无周月数据）。
+// Kline 先试主源（东财前复权），失败降级到备源（新浪，日/周/月都支持，但不复权）。
 func (c *Cascade) Kline(ctx context.Context, code string, period int, days int) ([]KlineDay, error) {
 	kl, err := c.primary.Kline(ctx, code, period, days)
 	if err == nil && len(kl) > 0 {
@@ -45,13 +45,7 @@ func (c *Cascade) Kline(ctx context.Context, code string, period int, days int) 
 	if err != nil {
 		c.logger.Debug("cascade: primary kline failed, trying fallback", "err", err, "code", code)
 	}
-	// 非日K：其它源不支持周/月，不降级直接报错。
-	if period != PeriodDaily && period != 0 {
-		if err != nil {
-			return nil, err
-		}
-		return nil, nil
-	}
+	// 备源（新浪）支持日/周/月；腾讯仅日K，周月由新浪兜住。
 	return c.fallback.Kline(ctx, code, period, days)
 }
 

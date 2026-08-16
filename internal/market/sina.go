@@ -133,16 +133,19 @@ func parseSinaResponse(text string) map[string]*Quote {
 
 // SinaSource 也实现 KlineProvider（新浪不复权日K，ETF 拆分会断崖，仅作兜底）。
 func (s *SinaSource) Kline(ctx context.Context, code string, period int, days int) ([]KlineDay, error) {
-	// 新浪仅日K；周/月请求直接返回空。
-	if period != PeriodDaily && period != 0 {
-		return nil, nil
-	}
 	if !IsAShare(code) {
 		return nil, nil
 	}
+	// 新浪 scale：240=日K, 1200=周K, 7200=月K（分钟数换算）。
+	scale := 240
+	switch period {
+	case PeriodWeekly:
+		scale = 1200
+	case PeriodMonthly:
+		scale = 7200
+	}
 	symbol := SinaSymbol(code)
-	// 新浪日K API：https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData
-	url := fmt.Sprintf("https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=%s&scale=240&datalen=%d", symbol, days)
+	url := fmt.Sprintf("https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol=%s&scale=%d&datalen=%d", symbol, scale, days)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
