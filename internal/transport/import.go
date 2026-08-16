@@ -67,7 +67,8 @@ const screenshotSystemPrompt = "你是投资记账助手，负责把用户上传
 	"- nav：基金的单位净值；price：股票的单价。截图上能看到哪个填哪个。\n" +
 	"- trade_date：截图上的交易/净值日期，转成 YYYY-MM-DD；看不到就留空字符串。\n" +
 	"- status：截图标注「待确认/确认中」等未确认状态的填 pending，否则 confirmed。\n" +
-	"- 截图明显不是交易/持仓记录（如首页、K线图、新闻）时，返回 {\"records\":[]}。\n" +
+	"- 专注解析截图里出现的投资记录内容，忽略界面上其他无关文字（如「识别失败」「0 条记录」、按钮文案、App 导航等）。只要截图里出现了基金/股票列表、持仓金额、收益等投资信息，就要把它们提取出来。\n" +
+	"- 只有当截图中完全没有任何投资/持仓/交易相关信息（如纯首页、K 线图、新闻文章）时，才返回 {\"records\":[]}。\n" +
 	"- 数字一律用数字类型，不要用字符串；空值填 0 或省略该字段。"
 
 // POST /api/import/screenshot
@@ -138,6 +139,7 @@ func (h *ImportHandler) parseAndRespond(c *gin.Context, imageB64, mime string) {
 		WriteError(c, http.StatusUnprocessableEntity, "识别结果不是合法 JSON，请重试或手工录入")
 		return
 	}
+	h.logger.Info("import/screenshot: parsed records", "count", len(records))
 	WriteJSON(c, http.StatusOK, screenshotResp{Records: records})
 }
 
