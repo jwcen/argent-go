@@ -1,5 +1,7 @@
 package strategy
 
+import "math"
+
 // Backtest 把「信号」与「收益」解耦，并**修正前视偏差**：
 //
 // signal[i] 表示「在第 i 日收盘时、依据截至当日的数据生成的仓位意愿」。
@@ -60,7 +62,7 @@ func Backtest(closes []float64, signal []int, costRate float64) *BacktestResult 
 	}
 	res.MaxDD = maxDD
 
-	// 单笔交易胜率：把持仓区间按连续 1 切分，每段的收益 = 区间末/区间首 - 1。
+	// 交易明细：把持仓区间按连续 1 切分，每段算一次开仓→平仓收益。
 	trades, wins := 0, 0
 	i := 0
 	for i < n {
@@ -69,10 +71,24 @@ func Backtest(closes []float64, signal []int, costRate float64) *BacktestResult 
 			for i < n && pos[i] == 1 {
 				i++
 			}
+			end := i - 1
 			trades++
-			if res.EquityTiming[i-1] > res.EquityTiming[start] {
+			openEq := 1.0
+			if start > 0 {
+				openEq = res.EquityTiming[start-1]
+			}
+			closeEq := res.EquityTiming[end]
+			ret := closeEq/openEq - 1
+			if ret > 0 {
 				wins++
 			}
+			res.TradesDetail = append(res.TradesDetail, TradeDetail{
+				OpenIdx:     start,
+				CloseIdx:    end,
+				OpenEquity:  openEq,
+				CloseEquity: closeEq,
+				Return:      ret,
+			})
 		} else {
 			i++
 		}
@@ -81,20 +97,65 @@ func Backtest(closes []float64, signal []int, costRate float64) *BacktestResult 
 		res.WinRate = float64(wins) / float64(trades)
 	}
 	res.Trades = trades
+
+	// 年化收益（252 交易日/年）：(1+TotalReturn)^(252/(n-1)) - 1
+	if 1+res.TotalReturn > 0 && n > 1 {
+		res.Annualized = math.Pow(1+res.TotalReturn, 252.0/float64(n-1)) - 1
+	} else {
+		res.Annualized = res.TotalReturn // 极端行情兜底
+	}
+
+	// 夏普比率：日收益均值/样本标准差 × √252（无风险利率视为 0）
+	dailyR := make([]float64, n-1)
+	for j := 1; j < n; j++ {
+		prevEq := res.EquityTiming[j-1]
+		if prevEq > 0 {
+			dailyR[j-1] = res.EquityTiming[j]/prevEq - 1
+		}
+	}
+	if len(dailyR) > 1 {
+		var sum float64
+		for _, r := range dailyR {
+			sum += r
+		}
+		mean := sum / float64(len(dailyR))
+		var ss float64
+		for _, r := range dailyR {
+			d := r - mean
+			ss += d * d
+		}
+		std := math.Sqrt(ss / float64(len(dailyR)-1))
+		if std > 0 {
+			res.Sharpe = mean / std * math.Sqrt(252)
+		}
+	}
+
 	return res
 }
 
 // BacktestResult 回测输出。
 type BacktestResult struct {
-	EquityTiming []float64 `json:"equity_timing"` // 择时净值曲线（起点 1）
-	EquityHold   []float64 `json:"equity_hold"`   // 买入持有净值曲线（起点 1）
-	TotalReturn  float64   `json:"total_return"`  // 择时总收益（小数，0.88 = +88%）
-	HoldReturn   float64   `json:"hold_return"`   // 买入持有总收益
-	Excess       float64   `json:"excess"`        // 超额 = 择时 - 持有
-	MaxDD        float64   `json:"max_dd"`        // 最大回撤（负数）
-	WinRate      float64   `json:"win_rate"`      // 单笔交易胜率
-	Trades       int       `json:"trades"`        // 交易段数
-	TimeInMarket float64   `json:"time_in_market"` // 在场比例 0~1
+	EquityTiming []float64     `json:"equity_timing"` // 择时净值曲线（起点 1）
+	EquityHold   []float64     `json:"equity_hold"`   // 买入持有净值曲线（起点 1）
+	TotalReturn  float64       `json:"total_return"`  // 择时总收益（小数，0.88 = +88%）
+	HoldReturn   float64       `json:"hold_return"`   // 买入持有总收益
+	Excess       float64       `json:"excess"`        // 超额 = 择时 - 持有
+	MaxDD        float64       `json:"max_dd"`        // 最大回撤（负数）
+	WinRate      float64       `json:"win_rate"`      // 单笔交易胜率
+	Trades       int           `json:"trades"`        // 交易段数
+	TimeInMarket float64       `json:"time_in_market"`// 在场比例 0~1
+	Annualized   float64       `json:"annualized"`    // 年化收益（按 252 交易日）
+	Sharpe       float64       `json:"sharpe"`        // 夏普比率（rf=0）
+	TradesDetail []TradeDetail `json:"trades_detail"` // 每笔交易明细
+}
+
+// TradeDetail 单笔交易明细：开仓日 / 平仓日 / 区间收益率。
+type TradeDetail struct {
+	OpenIdx     int     `json:"open_idx"`     // 开仓日索引（已修正前视偏差）
+	CloseIdx    int     `json:"close_idx"`    // 平仓日索引
+	OpenEquity  float64 `json:"open_equity"`  // 开仓时净值
+	CloseEquity float64 `json:"close_equity"` // 平仓时净值
+	Return      float64 `json:"return"`       // 该笔收益（小数）
 }
 
 // downsample 把曲线均匀抽稀到最多 maxPts 个点，便于前端 SVG 绘制。

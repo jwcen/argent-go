@@ -1,6 +1,7 @@
 // Package strategy 提供「诚实版」策略能力：
-//   - 纯技术指标计算（indicators.go）：MA / EMA / MACD / RSI / KDJ
-//   - 回测内核（backtest.go）：带前视偏差修正的均线择时 vs 买入持有
+//   - 纯技术指标计算（indicators.go）：MA / EMA / MACD / RSI / KDJ / 布林带
+//   - 择时信号（position builder）：单均线 / 双均线 / 多指标共识 / 布林均值回归 / RSI / MACD / 放量突破
+//   - 回测内核（backtest.go）：带前视偏差修正的择时 vs 买入持有，含年化/夏普/交易明细
 //   - 报告组装（report.go）：把指标 + 你自己的账本复盘，组合成中性参考
 //
 // 设计原则（源自一次真实回测的结论）：
@@ -8,6 +9,8 @@
 //   只输出「价格相对均线的位置」「趋势方向」这类中性事实，以及基于真实账本的
 //   决策复盘（建仓至今盈亏）。任何「买入/卖出」措辞都被刻意降级为参考描述。
 package strategy
+
+import "math"
 
 // SMA 简单移动平均。返回与输入等长切片，warmup（不足 period）位置为 0。
 func SMA(v []float64, n int) []float64 {
@@ -197,6 +200,137 @@ func PosConsensus(high, low, close []float64) []int {
 		}
 		if v >= 2 {
 			pos[i] = 1
+		}
+	}
+	return pos
+}
+
+// PosBollingerMeanReversion 布林带均值回归：
+// 收盘价触及下轨（MA - k*σ）→ 在场（预期向中轨回归）；
+// 触及上轨（MA + k*σ）→ 离场；中间沿用昨日仓位。
+// 默认 N=20、k=2.0。
+func PosBollingerMeanReversion(closes []float64, n int, k float64) []int {
+	if n <= 0 {
+		n = 20
+	}
+	if k <= 0 {
+		k = 2.0
+	}
+	ma := SMA(closes, n)
+	pos := make([]int, len(closes))
+	for i := n - 1; i < len(closes); i++ {
+		var sumSq float64
+		for j := i - n + 1; j <= i; j++ {
+			d := closes[j] - ma[i]
+			sumSq += d * d
+		}
+		std := math.Sqrt(sumSq / float64(n))
+		upper := ma[i] + k*std
+		lower := ma[i] - k*std
+		switch {
+		case closes[i] <= lower:
+			pos[i] = 1
+		case closes[i] >= upper:
+			pos[i] = 0
+		default:
+			if i > 0 {
+				pos[i] = pos[i-1]
+			}
+		}
+	}
+	return pos
+}
+
+// PosRSI RSI 择时：RSI <= oversold 进场、>= overbought 离场、中间沿用昨日仓位。
+// 默认 period=14、oversold=30、overbought=70。
+func PosRSI(closes []float64, period, oversold, overbought int) []int {
+	if period <= 0 {
+		period = 14
+	}
+	if oversold <= 0 {
+		oversold = 30
+	}
+	if overbought <= 0 {
+		overbought = 70
+	}
+	rsi := RSI(closes, period)
+	pos := make([]int, len(closes))
+	for i := range closes {
+		if rsi[i] == 0 {
+			continue
+		}
+		switch {
+		case rsi[i] <= float64(oversold):
+			pos[i] = 1
+		case rsi[i] >= float64(overbought):
+			pos[i] = 0
+		default:
+			if i > 0 {
+				pos[i] = pos[i-1]
+			}
+		}
+	}
+	return pos
+}
+
+// PosMACD MACD 金叉死叉：DIF 上穿 DEA → 在场；下穿 → 离场；中间沿用昨日仓位。
+// 内部自带 warmup（DIF/DEA 成型前不发信号）。
+func PosMACD(closes []float64) []int {
+	dif, dea, _ := MACD(closes)
+	pos := make([]int, len(closes))
+	for i := 1; i < len(closes); i++ {
+		if dif[i] == 0 || dea[i] == 0 || dif[i-1] == 0 || dea[i-1] == 0 {
+			continue
+		}
+		switch {
+		case dif[i-1] <= dea[i-1] && dif[i] > dea[i]:
+			pos[i] = 1 // 金叉
+		case dif[i-1] >= dea[i-1] && dif[i] < dea[i]:
+			pos[i] = 0 // 死叉
+		default:
+			pos[i] = pos[i-1]
+		}
+	}
+	return pos
+}
+
+// PosBreakout 放量突破：收盘价创 N 日新高 + 当日成交量 >= N 日均量 × volMult → 在场；
+// 收盘价跌破 N 日新低 → 离场；中间沿用昨日仓位。
+// 默认 N=60、volMult=1.5。
+func PosBreakout(closes, volumes []float64, n int, volMult float64) []int {
+	if n <= 0 {
+		n = 60
+	}
+	if volMult <= 0 {
+		volMult = 1.5
+	}
+	if len(closes) != len(volumes) {
+		pos := make([]int, len(closes))
+		return pos
+	}
+	pos := make([]int, len(closes))
+	for i := n - 1; i < len(closes); i++ {
+		hi, lo := closes[i-n+1], closes[i-n+1]
+		var sumV float64
+		for j := i - n + 1; j <= i; j++ {
+			if closes[j] > hi {
+				hi = closes[j]
+			}
+			if closes[j] < lo {
+				lo = closes[j]
+			}
+			sumV += volumes[j]
+		}
+		avgV := sumV / float64(n)
+		switch {
+		case closes[i] >= hi && volumes[i] >= avgV*volMult:
+			pos[i] = 1
+		case closes[i] <= lo:
+			pos[i] = 0
+		default:
+			if i > 0 {
+				pos[i] = pos[i-1]
+			}
 		}
 	}
 	return pos

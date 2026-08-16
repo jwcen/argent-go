@@ -90,13 +90,25 @@ func TestRunBacktest_curvesBounded(t *testing.T) {
 			Volume: 1000,
 		}
 	}
-	for _, strat := range []string{"single_ma", "ma_cross", "consensus"} {
-		rep, err := RunBacktest("600000", "测试银行", k, BacktestParams{Strategy: strat, MAN: 60, MAFast: 20, MASlow: 60})
+	strats := []struct {
+		name   string
+		params BacktestParams
+	}{
+		{"single_ma", BacktestParams{Strategy: "single_ma", MAN: 60}},
+		{"ma_cross", BacktestParams{Strategy: "ma_cross", MAFast: 20, MASlow: 60}},
+		{"consensus", BacktestParams{Strategy: "consensus"}},
+		{"bollinger", BacktestParams{Strategy: "bollinger", BollN: 20, BollK: 2.0}},
+		{"rsi", BacktestParams{Strategy: "rsi", RSIPeriod: 14, RSIOversold: 30, RSIOverbought: 70}},
+		{"macd", BacktestParams{Strategy: "macd"}},
+		{"breakout", BacktestParams{Strategy: "breakout", BreakN: 60, BreakVol: 1.5}},
+	}
+	for _, s := range strats {
+		rep, err := RunBacktest("600000", "测试银行", k, s.params)
 		if err != nil {
-			t.Fatalf("RunBacktest(%s) error: %v", strat, err)
+			t.Fatalf("RunBacktest(%s) error: %v", s.name, err)
 		}
 		if len(rep.CurveTiming) == 0 || len(rep.CurveHold) == 0 {
-			t.Fatalf("curves empty for %s", strat)
+			t.Fatalf("curves empty for %s", s.name)
 		}
 		if len(rep.CurveTiming) > 160 {
 			t.Fatalf("curve not downsampled: %d", len(rep.CurveTiming))
@@ -104,6 +116,56 @@ func TestRunBacktest_curvesBounded(t *testing.T) {
 		if rep.CurveTiming[0] != 1 || rep.CurveHold[0] != 1 {
 			t.Fatalf("curves should start at 1")
 		}
+		// 新增的指标：年化、夏普、交易明细都应该填出来
+		if rep.Annualized == 0 && rep.TotalReturn != 0 {
+			t.Errorf("%s: Annualized 未计算 (TotalReturn=%v)", s.name, rep.TotalReturn)
+		}
+		if len(rep.TradesDetail) != rep.Trades {
+			t.Errorf("%s: TradesDetail 数量 %d 与 Trades %d 不一致", s.name, len(rep.TradesDetail), rep.Trades)
+		}
+	}
+}
+
+// TestBacktest_AnnualizedAndSharpe 验证年化/夏普在单调上行数据下的合理性。
+func TestBacktest_AnnualizedAndSharpe(t *testing.T) {
+	// 每天 +0.1% ± 微小噪声：有方向但有波动，Annualized 和 Sharpe 都应有意义
+	closes := make([]float64, 252)
+	for i := range closes {
+		if i == 0 {
+			closes[i] = 100
+		} else {
+			// 偶数日 +0.12%，奇数日 +0.08%（均值 +0.1%，有方差）
+			delta := 0.0012
+			if i%2 == 1 {
+				delta = 0.0008
+			}
+			closes[i] = closes[i-1] * (1 + delta)
+		}
+	}
+	signal := make([]int, len(closes))
+	for i := range signal {
+		signal[i] = 1 // 一直持仓
+	}
+	res := Backtest(closes, signal, 0)
+	// 一直在场：TotalReturn ≈ (1.001)^251 - 1 ≈ 28.6%（精确值因 ± 噪声略低）
+	want := math.Pow(1.001, 251) - 1
+	if math.Abs(res.TotalReturn-want) > 5e-3 {
+		t.Fatalf("TotalReturn = %v, want ≈%v", res.TotalReturn, want)
+	}
+	// 年化 ≈ (1+want)^(252/251)-1 ≈ 0.286
+	wantAnn := math.Pow(1+want, 252.0/251.0) - 1
+	if math.Abs(res.Annualized-wantAnn) > 1e-2 {
+		t.Fatalf("Annualized = %v, want %v", res.Annualized, wantAnn)
+	}
+	if res.Annualized < 0.2 || res.Annualized > 0.4 {
+		t.Fatalf("Annualized 应该在 0.2-0.4 之间，got %v", res.Annualized)
+	}
+	// 日收益有方差 → Sharpe 应远大于 0（高且为正）
+	if res.Sharpe <= 0 {
+		t.Fatalf("Sharpe 应该 > 0（有方向+波动），got %v", res.Sharpe)
+	}
+	if res.Sharpe < 5 {
+		t.Fatalf("Sharpe 应该很高（强趋势+低波动），got %v", res.Sharpe)
 	}
 }
 

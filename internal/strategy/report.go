@@ -67,27 +67,40 @@ type Report struct {
 
 // BacktestParams 回测请求参数。
 type BacktestParams struct {
-	Strategy string `json:"strategy"` // single_ma | ma_cross | consensus
+	Strategy string `json:"strategy"` // single_ma | ma_cross | consensus | bollinger | rsi | macd | breakout
 	MAN      int    `json:"ma_n"`
 	MAFast   int    `json:"ma_fast"`
 	MASlow   int    `json:"ma_slow"`
+	// 布林均值回归
+	BollN int     `json:"boll_n"`
+	BollK float64 `json:"boll_k"`
+	// RSI 择时
+	RSIPeriod    int `json:"rsi_period"`
+	RSIOversold  int `json:"rsi_oversold"`
+	RSIOverbought int `json:"rsi_overbought"`
+	// 放量突破
+	BreakN   int     `json:"break_n"`
+	BreakVol float64 `json:"break_vol"`
 }
 
 // BacktestReport 回测结果（含净值曲线，已抽稀）。
 type BacktestReport struct {
-	Code         string    `json:"code"`
-	Name         string    `json:"name"`
-	Strategy     string    `json:"strategy"`
-	TotalReturn  float64   `json:"total_return"`
-	HoldReturn   float64   `json:"hold_return"`
-	Excess       float64   `json:"excess"`
-	MaxDD        float64   `json:"max_dd"`
-	WinRate      float64   `json:"win_rate"`
-	Trades       int       `json:"trades"`
-	TimeInMarket float64   `json:"time_in_market"`
-	CurveTiming  []float64 `json:"curve_timing"`
-	CurveHold    []float64 `json:"curve_hold"`
-	Note         string    `json:"note"`
+	Code         string         `json:"code"`
+	Name         string         `json:"name"`
+	Strategy     string         `json:"strategy"`
+	TotalReturn  float64        `json:"total_return"`
+	HoldReturn   float64        `json:"hold_return"`
+	Excess       float64        `json:"excess"`
+	MaxDD        float64        `json:"max_dd"`
+	WinRate      float64        `json:"win_rate"`
+	Trades       int            `json:"trades"`
+	TimeInMarket float64        `json:"time_in_market"`
+	Annualized   float64        `json:"annualized"`     // 年化收益
+	Sharpe       float64        `json:"sharpe"`         // 夏普比率
+	CurveTiming  []float64      `json:"curve_timing"`
+	CurveHold    []float64      `json:"curve_hold"`
+	TradesDetail []TradeDetail  `json:"trades_detail"`  // 交易明细
+	Note         string         `json:"note"`
 }
 
 const costPerSwitch = 0.0010 // 单边 0.10%（佣金+印花税+滑点）
@@ -110,6 +123,13 @@ func lowsOf(k []market.KlineDay) []float64 {
 	out := make([]float64, len(k))
 	for i, x := range k {
 		out[i] = x.Low
+	}
+	return out
+}
+func volumesOf(k []market.KlineDay) []float64 {
+	out := make([]float64, len(k))
+	for i, x := range k {
+		out[i] = x.Volume
 	}
 	return out
 }
@@ -210,6 +230,14 @@ func RunBacktest(code, name string, klines []market.KlineDay, p BacktestParams) 
 		signal = PosCross(c, fast, slow)
 	case "consensus":
 		signal = PosConsensus(hi, lo, c)
+	case "bollinger":
+		signal = PosBollingerMeanReversion(c, p.BollN, p.BollK)
+	case "rsi":
+		signal = PosRSI(c, p.RSIPeriod, p.RSIOversold, p.RSIOverbought)
+	case "macd":
+		signal = PosMACD(c)
+	case "breakout":
+		signal = PosBreakout(c, volumesOf(klines), p.BreakN, p.BreakVol)
 	default: // single_ma
 		n := p.MAN
 		if n <= 0 {
@@ -224,6 +252,10 @@ func RunBacktest(code, name string, klines []market.KlineDay, p BacktestParams) 
 		"single_ma": "单均线择时",
 		"ma_cross":  "双均线金叉",
 		"consensus": "多指标共识",
+		"bollinger": "布林均值回归",
+		"rsi":       "RSI 择时",
+		"macd":      "MACD 金叉死叉",
+		"breakout":  "放量突破",
 	}[p.Strategy]
 	if strategyName == "" {
 		strategyName = "单均线择时"
@@ -240,8 +272,11 @@ func RunBacktest(code, name string, klines []market.KlineDay, p BacktestParams) 
 		WinRate:      res.WinRate,
 		Trades:       res.Trades,
 		TimeInMarket: res.TimeInMarket,
+		Annualized:   res.Annualized,
+		Sharpe:       res.Sharpe,
 		CurveTiming:  downsample(res.EquityTiming, 160),
 		CurveHold:    downsample(res.EquityHold, 160),
+		TradesDetail: res.TradesDetail,
 		Note:         fmt.Sprintf("单边交易成本假设 %.2f%%（含佣金、印花税、滑点）；信号次日执行，已修正前视偏差。", costPerSwitch*100),
 	}, nil
 }
