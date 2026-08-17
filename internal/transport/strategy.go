@@ -387,12 +387,24 @@ func normalizePeriod(p int) int {
 	}
 }
 
+// klineBarLite 前端传入的 K 线（与前端 KlineBar / 后端 KlineDay 字段一致）。
+// 回测时若前端已持有 detail.klines，直接复用，避免重复拉行情源导致信号与图形错位。
+type klineBarLite struct {
+	Date   string  `json:"date"`
+	Open   float64 `json:"open"`
+	High   float64 `json:"high"`
+	Low    float64 `json:"low"`
+	Close  float64 `json:"close"`
+	Volume float64 `json:"volume"`
+}
+
 // Backtest 对任意 A 股代码用指定均线策略做历史回测。
 func (h *StrategyHandler) Backtest(c *gin.Context) {
 	var req struct {
 		strategy.BacktestParams
-		Code string `json:"code"`
-		Name string `json:"name"`
+		Code   string         `json:"code"`
+		Name   string         `json:"name"`
+		Klines []klineBarLite `json:"klines"` // 可选：前端已持有的详情 K 线，复用以保证信号与图形同源同窗口
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		WriteError(c, http.StatusBadRequest, "invalid request body")
@@ -405,21 +417,40 @@ func (h *StrategyHandler) Backtest(c *gin.Context) {
 	}
 
 	period := normalizePeriod(req.Period)
-	// 周/月K线数量天然少：日K要 ≥60 根，周/月相应放宽阈值。
-	days := 1500
+	// 与详情页 Detail 保持同一窗口（400 根）——回测索引 open_idx/close_idx
+	// 必须和 detail.klines 同源同窗口，前端才会把信号画在正确的时间位置。
+	// 这里取 400 根对齐日/周/月三种 period；minBars 随 period 放宽阈值。
+	days := 400
 	minBars := 60
 	if period == market.PeriodWeekly {
-		days = 520 // 约 10 年周线
 		minBars = 20
 	} else if period == market.PeriodMonthly {
-		days = 240 // 约 20 年月线
 		minBars = 12
 	}
 	ctx := c.Request.Context()
-	klines, err := h.kline.Kline(ctx, code, period, days)
-	if err != nil || len(klines) < minBars {
-		WriteError(c, http.StatusBadGateway, "无法获取该代码的历史 K 线（需要网络）")
-		return
+
+	var klines []market.KlineDay
+	if len(req.Klines) >= minBars {
+		// 优先复用前端传入的 K 线：回测与图形完全同源同窗口，信号位置确定、
+		// 且不受行情源「盘中实时数据波动 / 两次请求时间差」影响（消除「每次叠加位置不同」）。
+		klines = make([]market.KlineDay, 0, len(req.Klines))
+		for _, k := range req.Klines {
+			klines = append(klines, market.KlineDay{
+				Date:   k.Date,
+				Open:   k.Open,
+				High:   k.High,
+				Low:    k.Low,
+				Close:  k.Close,
+				Volume: k.Volume,
+			})
+		}
+	} else {
+		var err error
+		klines, err = h.kline.Kline(ctx, code, period, days)
+		if err != nil || len(klines) < minBars {
+			WriteError(c, http.StatusBadGateway, "无法获取该代码的历史 K 线（需要网络）")
+			return
+		}
 	}
 	name := req.Name
 	if name == "" {
