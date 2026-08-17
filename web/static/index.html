@@ -2,34 +2,33 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#06080f" />
-    <script>
-      // 无闪烁主题初始化: 在首屏绘制前应用已保存的主题(默认 dark)
-      (function () {
-        try {
-          var t = localStorage.getItem('argent-theme') || 'dark';
-          document.documentElement.dataset.theme = t;
-          var meta = document.querySelector('meta[name="theme-color"]');
-          if (meta) meta.setAttribute('content', t === 'light' ? '#f4f5f7' : '#06080f');
-        } catch (e) {}
-      })();
-    </script>
+    <meta name="theme-color" content="#f5f5f7" />
+    <meta name="description" content="Argent · 清晰、克制的投资组合记录与复盘工具" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <title>Argent</title>
-    <link rel="icon" href="/icon-192.svg" />
-    <link rel="apple-touch-icon" href="/icon-192.svg" />
-    <link rel="manifest" href="/manifest.json" />
-    <script type="module" crossorigin src="/assets/index-BZ0WbzF3.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-Dj7-g6aL.css">
+    <title>Argent · 投资组合</title>
+    <script>
+      // 防主题闪烁：必须在首帧绘制前同步跑完。若等 React 挂载再设，
+      // 深色用户每次刷新都会先看到一帧白屏。
+      (function () {
+        try {
+          var s = localStorage.getItem('argent-theme')
+          var dark =
+            s === 'dark' ||
+            (s !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)
+          document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+          document
+            .querySelector('meta[name="theme-color"]')
+            .setAttribute('content', dark ? '#000000' : '#f5f5f7')
+        } catch (e) {}
+      })()
+    </script>
+    <script type="module" crossorigin src="/assets/index-D1FcxZKX.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-BBwQGh8A.css">
   </head>
   <body>
     <div id="root"></div>
-    <script>
-      if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('/sw.js').catch(() => {});
-      }
-    </script>
   </body>
 </html>
