@@ -58,9 +58,16 @@ func Build(ctx context.Context) (*App, error) {
 	}
 
 	authRepo := sqlite.NewAuthRepo(mgr.Global())
+
+	// 生产环境且配置了 SMTP 时用真实发信器，否则回退到开发日志发信器。
+	var mailer auth.Mailer = auth.NewLogMailer(logger)
+	if cfg := auth.SMTPConfigFromEnv(); cfg.Enabled() && os.Getenv("ARGENT_ENV") == "production" {
+		mailer = auth.NewSMTPMailer(cfg, logger)
+		logger.Info("using SMTP mailer", "host", cfg.Host, "user", cfg.User)
+	}
 	authSvc := auth.NewService(
 		authRepo,
-		auth.NewLogMailer(logger),
+		mailer,
 		mgr,
 		auth.DefaultConfig(),
 	)
