@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -138,23 +139,42 @@ func (h *AuthHandler) Me(c *gin.Context) {
 // SameSite=Lax：跨站请求不带 cookie，抵御大部分 CSRF。
 // Secure：仅生产开启，本地 http 调试时若开启浏览器会拒绝保存。
 func (h *AuthHandler) setSessionCookie(c *gin.Context, token string) {
-	secure := os.Getenv("ARGENT_ENV") == "production"
 	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(
 		SessionCookieName,
 		token,
 		int(h.svc.SessionTTL().Seconds()),
 		"/",
-		"",     // domain 留空 = 当前主机
-		secure, // Secure
-		true,   // HttpOnly
+		"",               // domain 留空 = 当前主机
+		h.cookieSecure(c), // Secure：仅当连接或前置代理为 HTTPS
+		true,             // HttpOnly
 	)
 }
 
 func (h *AuthHandler) clearSessionCookie(c *gin.Context) {
-	secure := os.Getenv("ARGENT_ENV") == "production"
 	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie(SessionCookieName, "", -1, "/", "", secure, true)
+	c.SetCookie(SessionCookieName, "", -1, "/", "", h.cookieSecure(c), true)
+}
+
+// cookieSecure 决定会话 cookie 是否带 Secure 标志。
+//
+// 规则：仅当「当前连接是 HTTPS」或「前置代理通过 X-Forwarded-Proto 声明是 HTTPS」时才标记 Secure。
+// 这样在尚未配置 HTTPS 的直接 HTTP 访问下（如开发机 / 裸 ECS IP）浏览器仍能保存 cookie，
+// 登录后才能正常携带；一旦套上 Nginx/HTTPS 反代，自动升级为 Secure。
+// 环境变量 ARGENT_COOKIE_SECURE 可强制覆盖（true/false），用于特殊部署或调试。
+func (h *AuthHandler) cookieSecure(c *gin.Context) bool {
+	if v := os.Getenv("ARGENT_COOKIE_SECURE"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
+	}
+	if c.Request.TLS != nil {
+		return true
+	}
+	if c.GetHeader("X-Forwarded-Proto") == "https" {
+		return true
+	}
+	return false
 }
 
 // writeAuthError 把领域哨兵错误映射为 HTTP 状态码。
